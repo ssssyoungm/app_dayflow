@@ -1,0 +1,6 @@
+{
+  "name": "데이플로우 (DayFlow)",
+  "description": "아이폰 Safari 홈 화면 추가(PWA)를 지원하는 일간·주간·월간 스마트 플래너, AI 시간표 인식, 열품타식 공부 타이머 앱",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
