@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express, { type NextFunction, type Request, type Response } from "express";
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenAI, Type, type GenerateContentParameters, type GenerateContentResponse } from "@google/genai";
@@ -54,21 +55,55 @@ function isModelUnavailableError(message: string): boolean {
   );
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} 응답 시간이 초과되었습니다 (${Math.round(ms / 1000)}초).`));
+    }, ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
+function isTimeoutOrTransientError(message: string): boolean {
+  return (
+    message.includes("초과") ||
+    message.includes("timeout") ||
+    message.includes("TIMEOUT") ||
+    isRetryableError(message) ||
+    isModelUnavailableError(message)
+  );
+}
+
 async function generateContentWithRetry(
   ai: GoogleGenAI,
   params: Omit<GenerateContentParameters, "model">
 ): Promise<GenerateContentResponse> {
-  const modelsToTry = [PRIMARY_MODEL, FALLBACK_MODEL];
+  const attemptsPlan = [
+    { model: PRIMARY_MODEL, maxAttempts: 1, timeoutMs: 22000 },
+    { model: FALLBACK_MODEL, maxAttempts: 2, timeoutMs: 22000 },
+  ];
   let lastError: unknown = null;
 
-  for (const model of modelsToTry) {
-    const maxAttempts = model === PRIMARY_MODEL ? 3 : 2;
+  for (const { model, maxAttempts, timeoutMs } of attemptsPlan) {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        return await ai.models.generateContent({
-          ...params,
-          model,
-        });
+        return await withTimeout(
+          ai.models.generateContent({
+            ...params,
+            model,
+          }),
+          timeoutMs,
+          model
+        );
       } catch (err) {
         lastError = err;
         const msg = err instanceof Error ? err.message : String(err);
@@ -88,13 +123,13 @@ async function generateContentWithRetry(
           break;
         }
 
-        if (isRetryableError(msg) && attempt < maxAttempts) {
-          await sleep(700 * attempt);
+        if (isTimeoutOrTransientError(msg) && attempt < maxAttempts) {
+          await sleep(600 * attempt);
           continue;
         }
 
-        // If still failing with 503/unavailable, allow loop to try fallback model
-        if (isModelUnavailableError(msg)) {
+        // Move to fallback model on timeout / 503 / transient errors
+        if (isTimeoutOrTransientError(msg)) {
           break;
         }
 
@@ -255,6 +290,14 @@ interface ExistingScheduleInput {
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: "25mb" }));
+
+  // Prevent browsers, iOS PWA, or reverse proxies from caching API responses
+  app.use("/api", (_req: Request, res: Response, next: NextFunction) => {
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+    next();
+  });
 
   app.get("/api/health", (_req: Request, res: Response) => {
     res.json({ ok: true, service: "dayflow-api" });
@@ -572,6 +615,13 @@ ${
     }
   });
 
+  // Never let unmatched /api/* requests fall through to SPA index.html (which would return HTTP 200 HTML)
+  app.all("/api/*", (req: Request, res: Response) => {
+    return res.status(404).json({
+      error: `존재하지 않는 API 경로입니다 (${req.method} ${req.path}).`,
+    });
+  });
+
   // Ensure API errors (including payload too large / bad JSON) always return valid JSON (never HTML)
   app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
     if (req.path.startsWith("/api/")) {
@@ -589,7 +639,15 @@ ${
   });
 
   // Vite dev middleware vs static production build
-  if (process.env.NODE_ENV !== "production") {
+  const distPath = path.resolve(__dirname, "dist");
+  const isTsxRuntime =
+    process.execArgv.some((arg) => arg.includes("tsx")) ||
+    process.argv.some((arg) => arg.includes("tsx"));
+  const useProductionStatic =
+    process.env.NODE_ENV === "production" ||
+    (!isTsxRuntime && fs.existsSync(path.join(distPath, "index.html")));
+
+  if (!useProductionStatic) {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -597,16 +655,18 @@ ${
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.resolve(__dirname, "dist");
     app.use(express.static(distPath));
     app.get("*", (_req: Request, res: Response) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`DayFlow server listening on http://0.0.0.0:${PORT}`);
+  const server = app.listen(PORT, "0.0.0.0", () => {
+    console.log(
+      `DayFlow server listening on http://0.0.0.0:${PORT} (${useProductionStatic ? "production" : "development"})`
+    );
   });
+  server.requestTimeout = 120000;
 }
 
 startServer().catch((err) => {

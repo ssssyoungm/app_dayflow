@@ -121,16 +121,28 @@ async function prepareImageForUpload(
   return { dataUrl: rawDataUrl, mimeType: inferredMime };
 }
 
+interface ApiParseResult<T> {
+  ok: boolean;
+  status: number;
+  data: T | null;
+  errorMsg: string;
+  shouldRetry?: boolean;
+}
+
 /**
  * Safely parses fetch responses without triggering Safari's
- * "The string did not match the expected pattern." JSON SyntaxError on HTML/empty responses.
+ * "The string did not match the expected pattern." JSON SyntaxError on HTML/empty responses,
+ * and identifies why a non-JSON HTTP 200 response occurred (SPA static fallback, auth redirect, or waking proxy).
  */
-async function parseApiJson<T>(res: Response): Promise<{ ok: boolean; status: number; data: T | null; errorMsg: string }> {
+async function parseApiJson<T>(res: Response): Promise<ApiParseResult<T>> {
   const rawText = await res.text();
+  const trimmed = rawText.trim();
+  const contentType = (res.headers.get("content-type") || "").toLowerCase();
+
   let parsed: unknown = null;
-  if (rawText.trim()) {
+  if (trimmed) {
     try {
-      parsed = JSON.parse(rawText);
+      parsed = JSON.parse(trimmed);
     } catch {
       parsed = null;
     }
@@ -162,14 +174,111 @@ async function parseApiJson<T>(res: Response): Promise<{ ok: boolean; status: nu
       status: res.status,
       data: null,
       errorMsg: "서버가 깨어나는 중이거나 AI 응답이 지연되었습니다. 5~10초 후 다시 눌러 주세요.",
+      shouldRetry: true,
     };
   }
+
+  const head = trimmed.slice(0, 800).toLowerCase();
+  const looksLikeHtml = contentType.includes("text/html") || head.startsWith("<!doctype") || head.startsWith("<html");
+
+  if (looksLikeHtml) {
+    // 1. Auth redirect (e.g., AI Studio preview / iOS Home Screen PWA session expired or Safari ITP blocking cookie)
+    if (
+      res.redirected ||
+      head.includes("accounts.google.com") ||
+      head.includes("servicelogin") ||
+      head.includes("sign in") ||
+      head.includes("로그인")
+    ) {
+      return {
+        ok: false,
+        status: res.status,
+        data: null,
+        errorMsg:
+          "인증 세션이 만료되어 AI API 요청이 차단되었습니다. 브라우저를 새로고침해 다시 로그인하거나, 배포된 Render Web Service 주소로 접속해 주세요.",
+      };
+    }
+
+    // 2. DayFlow's own SPA index.html returned instead of Express API (Static Site / vite preview without backend)
+    if (head.includes("dayflow") || head.includes("데이플로우") || head.includes('id="root"')) {
+      return {
+        ok: false,
+        status: res.status,
+        data: null,
+        errorMsg:
+          "현재 접속한 서버에서 백엔드 API(/api)가 실행되지 않고 화면 HTML만 반환되었습니다. Render 배포 시 'Static Site'가 아닌 'Web Service'(Start Command: npm start, 환경변수 GEMINI_API_KEY 설정)인지 확인해 주세요.",
+      };
+    }
+
+    // 3. Hosting wake-up / interstitial HTML (e.g., Render free-tier cold start)
+    return {
+      ok: false,
+      status: res.status,
+      data: null,
+      errorMsg:
+        "호스팅 서버가 깨어나는 중이거나 임시 안내 페이지(HTML)를 반환했습니다. 10~20초 후 다시 눌러 주세요.",
+      shouldRetry: true,
+    };
+  }
+
   return {
     ok: false,
     status: res.status,
     data: null,
-    errorMsg: `서버 응답을 처리하지 못했습니다 (HTTP ${res.status}). 잠시 후 다시 시도해 주세요.`,
+    errorMsg: `서버 응답을 처리하지 못했습니다 (HTTP ${res.status}${contentType ? `, ${contentType.split(";")[0]}` : ""}). 잠시 후 다시 시도해 주세요.`,
   };
+}
+
+async function postApiJson<T>(url: string, payload: unknown): Promise<ApiParseResult<T>> {
+  const maxAttempts = 2;
+  let lastResult: ApiParseResult<T> = {
+    ok: false,
+    status: 0,
+    data: null,
+    errorMsg: "네트워크 연결을 확인한 뒤 다시 시도해 주세요.",
+  };
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 65000);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+
+      lastResult = await parseApiJson<T>(res);
+      if (lastResult.ok || !lastResult.shouldRetry || attempt === maxAttempts) {
+        return lastResult;
+      }
+      await new Promise((r) => window.setTimeout(r, 3500));
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        lastResult = {
+          ok: false,
+          status: 408,
+          data: null,
+          errorMsg: "AI 응답 시간이 초과되었습니다. 잠시 후 다시 눌러 주세요.",
+        };
+        return lastResult;
+      }
+      if (attempt === maxAttempts) {
+        throw err;
+      }
+      await new Promise((r) => window.setTimeout(r, 2000));
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
+
+  return lastResult;
 }
 
 export const AITimetableTab: React.FC<AITimetableTabProps> = ({
@@ -290,17 +399,14 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
     setParsingImage(true);
     setParseError("");
     try {
-      const res = await fetch("/api/timetable/parse", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const parsed = await postApiJson<{ summary?: string; items?: ParsedTimetableBlock[] }>(
+        "/api/timetable/parse",
+        {
           imageBase64: imagePreview,
           mimeType: imageMime,
           referenceDate: baseWeekDate,
-        }),
-      });
-
-      const parsed = await parseApiJson<{ summary?: string; items?: ParsedTimetableBlock[] }>(res);
+        }
+      );
       if (!parsed.ok || !parsed.data) {
         throw new Error(parsed.errorMsg);
       }
@@ -488,31 +594,25 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
           priority: s.priority,
         }));
 
-      const res = await fetch("/api/study/recommend", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          targetDate: effectiveDate,
-          mode: recommendScope,
-          freeSlots: slotsToUse,
-          existingEvents,
-          studyGoals: subjectStats.map((st) => ({
-            id: st.goal.id,
-            subjectName: st.goal.subjectName,
-            weeklyTargetMinutes: st.goal.weeklyTargetMinutes,
-            defaultSessionMinutes: st.goal.defaultSessionMinutes,
-            priority: st.goal.priority,
-            completedThisWeekMinutes: st.completedThisWeekMinutes,
-            actualToPlannedRatio: st.actualToPlannedRatio,
-            sessionCount: st.sessionCount,
-          })),
-        }),
-      });
-
-      const parsed = await parseApiJson<{
+      const parsed = await postApiJson<{
         strategySummary?: string;
         recommendations?: AIStudyRecommendation[];
-      }>(res);
+      }>("/api/study/recommend", {
+        targetDate: effectiveDate,
+        mode: recommendScope,
+        freeSlots: slotsToUse,
+        existingEvents,
+        studyGoals: subjectStats.map((st) => ({
+          id: st.goal.id,
+          subjectName: st.goal.subjectName,
+          weeklyTargetMinutes: st.goal.weeklyTargetMinutes,
+          defaultSessionMinutes: st.goal.defaultSessionMinutes,
+          priority: st.goal.priority,
+          completedThisWeekMinutes: st.completedThisWeekMinutes,
+          actualToPlannedRatio: st.actualToPlannedRatio,
+          sessionCount: st.sessionCount,
+        })),
+      });
 
       if (!parsed.ok || !parsed.data) {
         throw new Error(parsed.errorMsg);
