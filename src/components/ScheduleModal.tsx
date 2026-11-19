@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Bell, Calendar, Download, Palette, Trash2, X } from "lucide-react";
+import { Bell, Calendar, Download, Palette, Plus, Trash2, X } from "lucide-react";
 import type {
   ColorCardId,
   PriorityLevel,
@@ -8,7 +8,7 @@ import type {
   ScheduleSubType,
   StudyGoal,
 } from "../types/dayflow";
-import { COLOR_CARD_LIST, colorToHex, isPresetColorId } from "../lib/colors";
+import { COLOR_CARD_LIST, colorToHex, formatSubTypeLabel, isPresetColorId } from "../lib/colors";
 import { exportSchedulesToIcs, downloadTextFile } from "../lib/ics";
 import { generateId } from "../lib/storage";
 import { getTodayStr, timeToMinutes } from "../lib/dateUtils";
@@ -18,29 +18,23 @@ interface ScheduleModalProps {
   initialDate: string;
   editingItem: ScheduleItem | null;
   studyGoals: StudyGoal[];
+  customSubTypes: string[];
+  onAddCustomSubType: (label: string) => void;
+  onDeleteCustomSubType: (label: string) => void;
   onClose: () => void;
   onSave: (item: ScheduleItem) => void;
   onDelete?: (id: string) => void;
   onNotifyPermissionHint?: () => void;
 }
 
-const FIXED_SUBTYPES: Array<{ value: ScheduleSubType; label: string }> = [
-  { value: "assignment", label: "과제" },
-  { value: "exam", label: "시험" },
-  { value: "event", label: "학과 행사" },
-  { value: "class", label: "수업" },
-];
-
-const PERSONAL_SUBTYPES: Array<{ value: ScheduleSubType; label: string }> = [
-  { value: "study", label: "과목 공부" },
-  { value: "routine", label: "개인 루틴" },
-];
-
 export const ScheduleModal: React.FC<ScheduleModalProps> = ({
   isOpen,
   initialDate,
   editingItem,
   studyGoals,
+  customSubTypes,
+  onAddCustomSubType,
+  onDeleteCustomSubType,
   onClose,
   onSave,
   onDelete,
@@ -48,7 +42,8 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
 }) => {
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState<ScheduleCategory>("fixed");
-  const [subType, setSubType] = useState<ScheduleSubType>("assignment");
+  const [subType, setSubType] = useState<ScheduleSubType>("");
+  const [newSubTypeInput, setNewSubTypeInput] = useState("");
   const [priority, setPriority] = useState<PriorityLevel>("medium");
   const [date, setDate] = useState(initialDate || getTodayStr());
   const [startTime, setStartTime] = useState("09:00");
@@ -67,10 +62,11 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
     if (!isOpen) return;
     setErrorMsg("");
     setConfirmDelete(false);
+    setNewSubTypeInput("");
     if (editingItem) {
       setTitle(editingItem.title);
       setCategory(editingItem.category);
-      setSubType(editingItem.subType);
+      setSubType(formatSubTypeLabel(editingItem.subType));
       setPriority(editingItem.priority);
       setDate(editingItem.date);
       setStartTime(editingItem.startTime);
@@ -85,7 +81,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
     } else {
       setTitle("");
       setCategory("fixed");
-      setSubType("assignment");
+      setSubType("");
       setPriority("medium");
       setDate(initialDate || getTodayStr());
       setStartTime("10:00");
@@ -104,10 +100,20 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
 
   const handleCategoryChange = (nextCat: ScheduleCategory) => {
     setCategory(nextCat);
-    if (nextCat === "fixed") {
-      setSubType("assignment");
-    } else {
-      setSubType("study");
+  };
+
+  const handleAddSubType = () => {
+    const trimmed = newSubTypeInput.trim();
+    if (!trimmed) return;
+    onAddCustomSubType(trimmed);
+    setSubType(trimmed);
+    setNewSubTypeInput("");
+  };
+
+  const handleDeleteSubType = (label: string) => {
+    onDeleteCustomSubType(label);
+    if (subType === label) {
+      setSubType("");
     }
   };
 
@@ -139,6 +145,14 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
       return;
     }
 
+    // If user typed a new subtype in the input box without tapping "추가", save & select it automatically
+    const pendingSubType = newSubTypeInput.trim();
+    let resolvedSubType = subType.trim();
+    if (pendingSubType) {
+      onAddCustomSubType(pendingSubType);
+      resolvedSubType = pendingSubType;
+    }
+
     const nowIso = new Date().toISOString();
     const plannedMinutes = isAllDay
       ? 60
@@ -148,7 +162,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
       id: editingItem ? editingItem.id : generateId("sch"),
       title: trimmed,
       category,
-      subType,
+      subType: resolvedSubType,
       priority,
       date,
       startTime: isAllDay ? "00:00" : startTime,
@@ -175,8 +189,6 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
     const ics = exportSchedulesToIcs([editingItem], editingItem.title);
     downloadTextFile(`${editingItem.title.replace(/\s+/g, "_")}.ics`, ics, "text/calendar;charset=utf-8");
   };
-
-  const subTypeOptions = category === "fixed" ? FIXED_SUBTYPES : PERSONAL_SUBTYPES;
 
   return (
     <div
@@ -231,7 +243,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
                     : "text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
                 }`}
               >
-                고정 일정 (과제·행사·시험)
+                고정 일정
               </button>
               <button
                 type="button"
@@ -242,7 +254,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
                     : "text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
                 }`}
               >
-                개인 스케줄 (공부·루틴)
+                개인 스케줄
               </button>
             </div>
           </div>
@@ -259,48 +271,125 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
               onChange={(e) => setTitle(e.target.value)}
               placeholder={
                 category === "fixed"
-                  ? "예: 운영체제 중간고사, 팀 프로젝트 과제 제출"
+                  ? "예: 운영체제 중간고사, 팀 프로젝트 발표"
                   : "예: 자료구조 3장 복습, 토익 LC 문제풀이"
               }
               className="w-full min-h-[44px] rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-3.5 text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
             />
           </div>
 
-          {/* SubType & Priority */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label htmlFor="sch-subtype" className="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1.5">
-                세부 유형
+          {/* Custom User-Defined SubTypes (Unlimited) */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <label htmlFor="sch-custom-subtype" className="block text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                세부 유형 (직접 설정 · 개수 제한 없음)
               </label>
-              <select
-                id="sch-subtype"
-                value={subType}
-                onChange={(e) => setSubType(e.target.value as ScheduleSubType)}
-                className="w-full min-h-[44px] rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-3 text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-violet-500"
-              >
-                {subTypeOptions.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
+              {subType && (
+                <button
+                  type="button"
+                  onClick={() => setSubType("")}
+                  className="text-[11px] font-medium text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
+                >
+                  선택 해제
+                </button>
+              )}
             </div>
 
-            <div>
-              <label htmlFor="sch-priority" className="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1.5">
-                우선순위 {category === "fixed" ? "(월간 표시 기준)" : ""}
-              </label>
-              <select
-                id="sch-priority"
-                value={priority}
-                onChange={(e) => setPriority(e.target.value as PriorityLevel)}
-                className="w-full min-h-[44px] rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-3 text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-violet-500"
+            <div className="flex items-center gap-2">
+              <input
+                id="sch-custom-subtype"
+                type="text"
+                value={newSubTypeInput}
+                onChange={(e) => setNewSubTypeInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                    e.preventDefault();
+                    handleAddSubType();
+                  }
+                }}
+                placeholder="원하는 세부 유형 입력 (예: 동아리, 알바, 자격증)"
+                className="flex-1 min-w-0 min-h-[42px] rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-3.5 text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
+              />
+              <button
+                type="button"
+                onClick={handleAddSubType}
+                disabled={!newSubTypeInput.trim()}
+                className="min-h-[42px] px-3.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-45 text-white text-xs font-semibold flex items-center gap-1 shrink-0 whitespace-nowrap transition-colors"
               >
-                <option value="high">높음 (중요)</option>
-                <option value="medium">보통</option>
-                <option value="low">낮음</option>
-              </select>
+                <Plus className="w-3.5 h-3.5" />
+                <span>추가</span>
+              </button>
             </div>
+
+            {customSubTypes.length > 0 || subType ? (
+              <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                {subType && !customSubTypes.includes(subType) && (
+                  <div className="inline-flex items-center rounded-xl border border-violet-600 dark:border-violet-400 bg-violet-50 dark:bg-violet-950/40 text-violet-700 dark:text-violet-300 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setSubType("")}
+                      className="min-h-[34px] px-3 text-xs font-semibold"
+                    >
+                      {subType}
+                    </button>
+                  </div>
+                )}
+                {customSubTypes.map((label) => {
+                  const active = subType === label;
+                  return (
+                    <div
+                      key={label}
+                      className={`inline-flex items-center rounded-xl border transition-colors overflow-hidden ${
+                        active
+                          ? "border-violet-600 dark:border-violet-400 bg-violet-600 text-white"
+                          : "border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 text-zinc-700 dark:text-zinc-300 hover:border-violet-400 dark:hover:border-violet-600"
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setSubType(active ? "" : label)}
+                        className="min-h-[34px] pl-3 pr-2 text-xs font-medium whitespace-nowrap"
+                      >
+                        {label}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteSubType(label)}
+                        aria-label={`${label} 세부 유형 삭제`}
+                        className={`min-h-[34px] px-2 flex items-center justify-center transition-colors ${
+                          active
+                            ? "text-violet-100 hover:bg-violet-700"
+                            : "text-zinc-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                        }`}
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                아직 추가한 세부 유형이 없습니다. 위 입력창에 원하는 유형을 자유롭게 추가하거나, 선택 없이 바로 저장할 수 있습니다.
+              </p>
+            )}
+          </div>
+
+          {/* Priority */}
+          <div>
+            <label htmlFor="sch-priority" className="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1.5">
+              우선순위 {category === "fixed" ? "(월간 표시 기준)" : ""}
+            </label>
+            <select
+              id="sch-priority"
+              value={priority}
+              onChange={(e) => setPriority(e.target.value as PriorityLevel)}
+              className="w-full min-h-[44px] rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-950 px-3 text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-violet-500"
+            >
+              <option value="high">높음 (중요)</option>
+              <option value="medium">보통</option>
+              <option value="low">낮음</option>
+            </select>
           </div>
 
           {/* Linked Study Subject (when Personal) */}

@@ -1,5 +1,5 @@
 import type { ScheduleItem } from "../types/dayflow";
-import { CATEGORY_LABELS, PRIORITY_LABELS, SUBTYPE_LABELS } from "./colors";
+import { CATEGORY_LABELS, PRIORITY_LABELS, formatSubTypeLabel } from "./colors";
 import { generateId } from "./storage";
 
 function escapeIcsText(value: string): string {
@@ -68,8 +68,9 @@ export function exportSchedulesToIcs(items: ScheduleItem[], calendarName = "데�
     }
 
     lines.push(`SUMMARY:${escapeIcsText(item.title)}`);
+    const subTypeLabel = formatSubTypeLabel(item.subType);
     const metaDesc = [
-      `구분: ${CATEGORY_LABELS[item.category]} (${SUBTYPE_LABELS[item.subType]})`,
+      `구분: ${CATEGORY_LABELS[item.category]}${subTypeLabel ? ` (${subTypeLabel})` : ""}`,
       `우선순위: ${PRIORITY_LABELS[item.priority]}`,
       item.dueDate ? `마감일: ${item.dueDate}` : "",
       item.memo ? `메모: ${item.memo}` : "",
@@ -78,7 +79,9 @@ export function exportSchedulesToIcs(items: ScheduleItem[], calendarName = "데�
       .join("\n");
 
     lines.push(`DESCRIPTION:${escapeIcsText(metaDesc)}`);
-    lines.push(`CATEGORIES:${CATEGORY_LABELS[item.category]},${SUBTYPE_LABELS[item.subType]}`);
+    lines.push(
+      `CATEGORIES:${subTypeLabel ? `${CATEGORY_LABELS[item.category]},${subTypeLabel}` : CATEGORY_LABELS[item.category]}`
+    );
     lines.push(`PRIORITY:${item.priority === "high" ? 1 : item.priority === "medium" ? 5 : 9}`);
 
     if (item.notifyEnabled) {
@@ -174,11 +177,17 @@ export function importSchedulesFromIcs(icsText: string): ScheduleItem[] {
         const prioNum = Number(current.PRIORITY || 5);
         const priority = prioNum > 0 && prioNum <= 3 ? "high" : prioNum >= 7 ? "low" : "medium";
 
+        const rawCatParts = (current.CATEGORIES || "")
+          .split(",")
+          .map((p) => unescapeIcsText(p).trim())
+          .filter(Boolean);
+        const importedSubType = rawCatParts.length >= 2 ? rawCatParts[1] : "";
+
         imported.push({
           id: generateId("ics"),
           title: unescapeIcsText(current.SUMMARY),
           category: isPersonal ? "personal" : "fixed",
-          subType: isPersonal ? "study" : "event",
+          subType: importedSubType,
           priority,
           date: start.date,
           startTime: start.time,

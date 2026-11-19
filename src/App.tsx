@@ -40,7 +40,12 @@ export default function App() {
   const [hydrated, setHydrated] = useState(false);
   const [state, setState] = useState<DayFlowStateData>(EMPTY_STATE);
   const [stopwatch, setStopwatch] = useState<ActiveStopwatch>(() => loadActiveStopwatch());
-  const [activeTab, setActiveTab] = useState<AppTab>("planner");
+  const [activeTab, setActiveTab] = useState<AppTab>(() =>
+    loadActiveStopwatch().isRunning ? "timer" : "planner"
+  );
+  const [timerFullscreen, setTimerFullscreen] = useState<boolean>(
+    () => loadActiveStopwatch().isRunning
+  );
   const [selectedDate, setSelectedDate] = useState<string>(() => getTodayStr());
 
   // Schedule Modal state
@@ -52,6 +57,8 @@ export default function App() {
   const [toastMsg, setToastMsg] = useState<string>("");
   const toastTimerRef = useRef<number | null>(null);
   const notifiedKeysRef = useRef<Set<string>>(new Set());
+  const stopwatchRunningRef = useRef<boolean>(stopwatch.isRunning);
+  const wasHiddenRef = useRef<boolean>(false);
 
   const showToast = useCallback((msg: string) => {
     setToastMsg(msg);
@@ -85,8 +92,41 @@ export default function App() {
 
   // Persist active stopwatch changes
   useEffect(() => {
+    stopwatchRunningRef.current = stopwatch.isRunning;
     saveActiveStopwatch(stopwatch);
   }, [stopwatch]);
+
+  // When phone screen wakes up or PWA returns from background while measuring,
+  // immediately display the live study stopwatch focus screen.
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        wasHiddenRef.current = true;
+        return;
+      }
+      if (document.visibilityState === "visible" && wasHiddenRef.current) {
+        wasHiddenRef.current = false;
+        if (stopwatchRunningRef.current) {
+          setActiveTab("timer");
+          setTimerFullscreen(true);
+        }
+      }
+    };
+
+    const handlePageShow = (event: PageTransitionEvent) => {
+      if (event.persisted && stopwatchRunningRef.current) {
+        setActiveTab("timer");
+        setTimerFullscreen(true);
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("pageshow", handlePageShow);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("pageshow", handlePageShow);
+    };
+  }, []);
 
   // Auto 06:00~18:00 Light / 18:00~06:00 Dark theme hook
   const { isDark, isAutoDaytime } = useTheme(state.settings.themeMode);
@@ -232,6 +272,32 @@ export default function App() {
     }));
   };
 
+  const handleAddCustomSubType = (label: string) => {
+    const trimmed = label.trim();
+    if (!trimmed) return;
+    setState((prev) => {
+      const current = prev.settings.customSubTypes || [];
+      if (current.includes(trimmed)) return prev;
+      return {
+        ...prev,
+        settings: {
+          ...prev.settings,
+          customSubTypes: [...current, trimmed],
+        },
+      };
+    });
+  };
+
+  const handleDeleteCustomSubType = (label: string) => {
+    setState((prev) => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        customSubTypes: (prev.settings.customSubTypes || []).filter((item) => item !== label),
+      },
+    }));
+  };
+
   const handleRestoreBackup = (data: DayFlowStateData, mode: "replace" | "merge") => {
     if (mode === "replace") {
       setState(data);
@@ -241,6 +307,12 @@ export default function App() {
       const existingSchIds = new Set(prev.schedules.map((s) => s.id));
       const existingGoalIds = new Set(prev.studyGoals.map((g) => g.id));
       const existingSesIds = new Set(prev.studySessions.map((s) => s.id));
+      const mergedSubTypes = Array.from(
+        new Set([
+          ...(prev.settings.customSubTypes || []),
+          ...(data.settings.customSubTypes || []),
+        ])
+      );
 
       return {
         schedules: [
@@ -255,7 +327,10 @@ export default function App() {
           ...prev.studySessions,
           ...data.studySessions.filter((s) => !existingSesIds.has(s.id)),
         ],
-        settings: prev.settings,
+        settings: {
+          ...prev.settings,
+          customSubTypes: mergedSubTypes,
+        },
       };
     });
   };
@@ -375,6 +450,8 @@ export default function App() {
                 studyGoals={state.studyGoals}
                 studySessions={state.studySessions}
                 todayPersonalSchedules={todayPersonalSchedules}
+                focusFullscreen={timerFullscreen}
+                onSetFocusFullscreen={setTimerFullscreen}
                 onSaveSession={handleSaveSession}
                 onDeleteSession={handleDeleteSession}
                 onShowToast={showToast}
@@ -433,6 +510,9 @@ export default function App() {
         initialDate={modalDate}
         editingItem={editingItem}
         studyGoals={state.studyGoals}
+        customSubTypes={state.settings.customSubTypes || []}
+        onAddCustomSubType={handleAddCustomSubType}
+        onDeleteCustomSubType={handleDeleteCustomSubType}
         onClose={() => setModalOpen(false)}
         onSave={handleSaveSchedule}
         onDelete={handleDeleteSchedule}

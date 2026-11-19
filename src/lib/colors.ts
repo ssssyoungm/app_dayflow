@@ -169,7 +169,7 @@ export const CATEGORY_LABELS: Record<ScheduleCategory, string> = {
   personal: "개인 스케줄",
 };
 
-export const SUBTYPE_LABELS: Record<ScheduleSubType, string> = {
+const LEGACY_SUBTYPE_LABELS: Record<string, string> = {
   assignment: "과제",
   event: "학과 행사",
   exam: "시험",
@@ -177,6 +177,13 @@ export const SUBTYPE_LABELS: Record<ScheduleSubType, string> = {
   study: "과목 공부",
   routine: "개인 루틴",
 };
+
+/** Displays any user-defined subtype string directly, while keeping legacy keys readable */
+export function formatSubTypeLabel(subType: ScheduleSubType | undefined): string {
+  const trimmed = (subType || "").trim();
+  if (!trimmed) return "";
+  return LEGACY_SUBTYPE_LABELS[trimmed] || trimmed;
+}
 
 export const PRIORITY_LABELS: Record<PriorityLevel, string> = {
   high: "높음",

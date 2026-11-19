@@ -24,8 +24,8 @@ import type {
 import {
   COLOR_CARD_LIST,
   PRIORITY_LABELS,
-  SUBTYPE_LABELS,
   colorToHex,
+  formatSubTypeLabel,
   isPresetColorId,
   resolveColorTheme,
 } from "../lib/colors";
@@ -894,7 +894,7 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
                         ? blk.specificDate
                         : `매주 ${WEEKDAY_KO[blk.dayOfWeek ?? 1]}요일`}{" "}
                       · {blk.startTime}–{blk.endTime} ·{" "}
-                      {SUBTYPE_LABELS[blk.subType] || blk.subType} ·{" "}
+                      {formatSubTypeLabel(blk.subType) ? `${formatSubTypeLabel(blk.subType)} · ` : ""}
                       {PRIORITY_LABELS[blk.priority] || "보통"}
                     </p>
                     {blk.memo && (

@@ -14,7 +14,7 @@ import type { AppSettings, ScheduleCategory, ScheduleItem } from "../types/dayfl
 import {
   CATEGORY_LABELS,
   PRIORITY_LABELS,
-  SUBTYPE_LABELS,
+  formatSubTypeLabel,
   resolveColorTheme,
 } from "../lib/colors";
 import {
@@ -242,8 +242,12 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
               <span className={`font-medium ${theme.accentTextClass}`} style={theme.accentStyle}>
                 {CATEGORY_LABELS[item.category]}
               </span>
-              <span aria-hidden="true">·</span>
-              <span>{SUBTYPE_LABELS[item.subType]}</span>
+              {formatSubTypeLabel(item.subType) && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span>{formatSubTypeLabel(item.subType)}</span>
+                </>
+              )}
               <span aria-hidden="true">·</span>
               <span>
                 {item.isAllDay ? "종일" : `${item.startTime}–${item.endTime}`}
@@ -466,7 +470,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                 {formatKoreanDateFull(selectedDate)}에 등록된 일정이 없습니다
               </p>
               <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                고정 일정(과제·시험·수업)이나 개인 공부 스케줄을 추가하거나 시간표 사진을 AI로 불러오세요.
+                고정 일정이나 개인 스케줄을 추가하거나 시간표 사진을 AI로 불러오세요.
               </p>
               <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
                 <button
@@ -496,7 +500,6 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                     <h3 className="text-sm font-bold text-zinc-900 dark:text-zinc-100">
                       고정 일정 · <span className="font-normal text-zinc-500 dark:text-zinc-400 tabular-nums">{dailyFixed.length}건</span>
                     </h3>
-                    <span className="text-xs text-zinc-500 dark:text-zinc-400">과제 · 학과 행사 · 시험 · 수업</span>
                   </div>
                   {dailyFixed.length === 0 ? (
                     <div className="rounded-2xl border border-dashed border-zinc-200 dark:border-zinc-800 p-5 text-xs text-zinc-500 dark:text-zinc-400 text-center">
@@ -515,7 +518,6 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                     <h3 className="text-sm font-bold text-zinc-900 dark:text-zinc-100">
                       개인 스케줄 · <span className="font-normal text-zinc-500 dark:text-zinc-400 tabular-nums">{dailyPersonal.length}건</span>
                     </h3>
-                    <span className="text-xs text-zinc-500 dark:text-zinc-400">과목 공부 · 개인 루틴</span>
                   </div>
                   {dailyPersonal.length === 0 ? (
                     <div className="rounded-2xl border border-dashed border-zinc-200 dark:border-zinc-800 p-5 text-xs text-zinc-500 dark:text-zinc-400 text-center">

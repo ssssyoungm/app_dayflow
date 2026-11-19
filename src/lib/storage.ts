@@ -18,7 +18,26 @@ export const DEFAULT_SETTINGS: AppSettings = {
   studyWindowStart: "08:00",
   studyWindowEnd: "23:00",
   notificationsEnabled: false,
+  customSubTypes: [],
 };
+
+function normalizeSettings(raw?: Partial<AppSettings>): AppSettings {
+  const merged = { ...DEFAULT_SETTINGS, ...(raw || {}) };
+  const uniqueSubTypes = Array.isArray(merged.customSubTypes)
+    ? Array.from(
+        new Set(
+          merged.customSubTypes
+            .filter((s): s is string => typeof s === "string")
+            .map((s) => s.trim())
+            .filter(Boolean)
+        )
+      )
+    : [];
+  return {
+    ...merged,
+    customSubTypes: uniqueSubTypes,
+  };
+}
 
 export const DEFAULT_STOPWATCH: ActiveStopwatch = {
   isRunning: false,
@@ -91,7 +110,7 @@ export async function loadDayFlowState(): Promise<DayFlowStateData> {
         schedules: Array.isArray(fromIdb.schedules) ? fromIdb.schedules : [],
         studyGoals: Array.isArray(fromIdb.studyGoals) ? fromIdb.studyGoals : [],
         studySessions: Array.isArray(fromIdb.studySessions) ? fromIdb.studySessions : [],
-        settings: { ...DEFAULT_SETTINGS, ...(fromIdb.settings || {}) },
+        settings: normalizeSettings(fromIdb.settings),
       };
     }
   } catch {
@@ -106,7 +125,7 @@ export async function loadDayFlowState(): Promise<DayFlowStateData> {
         schedules: Array.isArray(parsed.schedules) ? parsed.schedules : [],
         studyGoals: Array.isArray(parsed.studyGoals) ? parsed.studyGoals : [],
         studySessions: Array.isArray(parsed.studySessions) ? parsed.studySessions : [],
-        settings: { ...DEFAULT_SETTINGS, ...(parsed.settings || {}) },
+        settings: normalizeSettings(parsed.settings),
       };
     }
   } catch {
@@ -168,7 +187,7 @@ export function parseBackupJson(rawText: string): DayFlowStateData {
     schedules: parsed.schedules,
     studyGoals: Array.isArray(parsed.studyGoals) ? parsed.studyGoals : [],
     studySessions: Array.isArray(parsed.studySessions) ? parsed.studySessions : [],
-    settings: { ...DEFAULT_SETTINGS, ...(parsed.settings || {}) },
+    settings: normalizeSettings(parsed.settings),
   };
 }
 

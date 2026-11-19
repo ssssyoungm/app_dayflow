@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
   Maximize2,
@@ -7,6 +7,7 @@ import {
   Play,
   RotateCcw,
   Save,
+  Sun,
   Trash2,
 } from "lucide-react";
 import type {
@@ -30,10 +31,14 @@ interface FocusTimerTabProps {
   studyGoals: StudyGoal[];
   studySessions: StudySession[];
   todayPersonalSchedules: ScheduleItem[];
+  focusFullscreen: boolean;
+  onSetFocusFullscreen: (open: boolean) => void;
   onSaveSession: (session: StudySession, markScheduleId?: string) => void;
   onDeleteSession: (id: string) => void;
   onShowToast: (msg: string) => void;
 }
+
+const DEFAULT_DOC_TITLE = "데이플로우 (DayFlow) — 스마트 일정 & 공부 플래너";
 
 export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
   stopwatch,
@@ -41,6 +46,8 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
   studyGoals,
   studySessions,
   todayPersonalSchedules,
+  focusFullscreen,
+  onSetFocusFullscreen,
   onSaveSession,
   onDeleteSession,
   onShowToast,
@@ -48,16 +55,74 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
   const [tickNow, setTickNow] = useState<number>(() => Date.now());
   const [customSubject, setCustomSubject] = useState<string>("");
   const [sessionMemo, setSessionMemo] = useState<string>("");
-  const [focusFullscreen, setFocusFullscreen] = useState<boolean>(false);
+  const [keepScreenAwake, setKeepScreenAwake] = useState<boolean>(false);
+  const wakeLockRef = useRef<WakeLockSentinel | null>(null);
+  const supportsWakeLock =
+    typeof navigator !== "undefined" && "wakeLock" in navigator;
 
+  // Immediate clock tick & instant resync when waking phone screen
   useEffect(() => {
     if (!stopwatch.isRunning) return;
-    setTickNow(Date.now());
-    const id = window.setInterval(() => {
-      setTickNow(Date.now());
-    }, 500);
-    return () => window.clearInterval(id);
+    const syncNow = () => setTickNow(Date.now());
+    syncNow();
+    const id = window.setInterval(syncNow, 500);
+    const onVis = () => {
+      if (document.visibilityState === "visible") syncNow();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("pageshow", syncNow);
+    window.addEventListener("focus", syncNow);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("pageshow", syncNow);
+      window.removeEventListener("focus", syncNow);
+    };
   }, [stopwatch.isRunning]);
+
+  // Optional Screen Wake Lock (keeps screen on during desk study if user turns it on)
+  const releaseWakeLock = useCallback(async () => {
+    if (wakeLockRef.current) {
+      try {
+        await wakeLockRef.current.release();
+      } catch {
+        // ignore
+      }
+      wakeLockRef.current = null;
+    }
+  }, []);
+
+  const acquireWakeLock = useCallback(async () => {
+    if (!supportsWakeLock) return;
+    try {
+      if (wakeLockRef.current) return;
+      const sentinel = await navigator.wakeLock.request("screen");
+      wakeLockRef.current = sentinel;
+      sentinel.addEventListener("release", () => {
+        wakeLockRef.current = null;
+      });
+    } catch {
+      // Browser denied or battery saver active
+    }
+  }, [supportsWakeLock]);
+
+  useEffect(() => {
+    if (keepScreenAwake && stopwatch.isRunning) {
+      acquireWakeLock();
+      const handleVis = () => {
+        if (document.visibilityState === "visible") {
+          acquireWakeLock();
+        }
+      };
+      document.addEventListener("visibilitychange", handleVis);
+      return () => {
+        document.removeEventListener("visibilitychange", handleVis);
+        releaseWakeLock();
+      };
+    }
+    releaseWakeLock();
+    return undefined;
+  }, [keepScreenAwake, stopwatch.isRunning, acquireWakeLock, releaseWakeLock]);
 
   const elapsedSeconds = useMemo(() => {
     if (!stopwatch.isRunning || !stopwatch.startedAtEpoch) {
@@ -104,6 +169,17 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
   const activeSubjectLabel = stopwatch.subjectName || customSubject.trim() || "자율 집중 공부";
   const plannedSeconds = Math.max(60, (stopwatch.plannedMinutes || 50) * 60);
   const progressPct = Math.min(100, Math.round((elapsedSeconds / plannedSeconds) * 100));
+
+  useEffect(() => {
+    if (stopwatch.isRunning) {
+      document.title = `${formatStopwatchClock(elapsedSeconds)} · ${activeSubjectLabel} | 데이플로우`;
+    } else {
+      document.title = DEFAULT_DOC_TITLE;
+    }
+    return () => {
+      document.title = DEFAULT_DOC_TITLE;
+    };
+  }, [stopwatch.isRunning, elapsedSeconds, activeSubjectLabel]);
 
   const handleSelectTarget = (
     subjectId: string,
@@ -193,7 +269,7 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
       startedAtEpoch: null,
       accumulatedSeconds: 0,
     });
-    setFocusFullscreen(false);
+    onSetFocusFullscreen(false);
     onShowToast(`${activeSubjectLabel} ${formatDurationKo(actualMinutes)} 기록이 저장되었습니다.`);
   };
 
@@ -201,25 +277,56 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
   if (focusFullscreen) {
     return (
       <div className="fixed inset-0 z-50 bg-zinc-950 text-zinc-50 flex flex-col justify-between p-6 pt-safe pb-safe">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-2">
           <div>
             <p className="text-xs text-zinc-400">오늘 총 누적 공부</p>
             <p className="text-lg font-bold font-mono-num text-violet-400">
               {formatStopwatchClock(todayTotalSeconds)}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => setFocusFullscreen(false)}
-            className="min-h-[44px] px-4 rounded-xl border border-zinc-800 bg-zinc-900 text-xs font-semibold text-zinc-200 flex items-center gap-1.5"
-          >
-            <Minimize2 className="w-4 h-4" />
-            <span>축소</span>
-          </button>
+          <div className="flex items-center gap-2">
+            {supportsWakeLock && (
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !keepScreenAwake;
+                  setKeepScreenAwake(next);
+                  onShowToast(
+                    next
+                      ? "화면 꺼짐 방지가 켜졌습니다."
+                      : "화면 꺼짐 방지가 꺼졌습니다. 화면을 껐다 켜면 측정 화면이 자동으로 열립니다."
+                  );
+                }}
+                className={`min-h-[44px] px-3 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+                  keepScreenAwake
+                    ? "border-violet-500 bg-violet-600/20 text-violet-300"
+                    : "border-zinc-800 bg-zinc-900 text-zinc-300"
+                }`}
+              >
+                <Sun className="w-4 h-4" />
+                <span>{keepScreenAwake ? "화면 유지중" : "화면 유지"}</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onSetFocusFullscreen(false)}
+              className="min-h-[44px] px-4 rounded-xl border border-zinc-800 bg-zinc-900 text-xs font-semibold text-zinc-200 flex items-center gap-1.5"
+            >
+              <Minimize2 className="w-4 h-4" />
+              <span>축소</span>
+            </button>
+          </div>
         </div>
 
         <div className="my-auto text-center space-y-5">
-          <p className="text-sm font-semibold text-violet-300">{activeSubjectLabel}</p>
+          <div className="space-y-1.5">
+            <p className="text-sm font-semibold text-violet-300">{activeSubjectLabel}</p>
+            {stopwatch.isRunning && (
+              <p className="text-[11px] font-medium text-zinc-400">
+                실시간 측정 중 · 화면이 꺼져도 시간은 정확히 누적됩니다
+              </p>
+            )}
+          </div>
           <p className="text-6xl sm:text-8xl font-bold font-mono-num tracking-tight text-white">
             {formatStopwatchClock(elapsedSeconds)}
           </p>
@@ -280,14 +387,39 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
                 {formatStopwatchClock(todayTotalSeconds)}
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => setFocusFullscreen(true)}
-              className="min-h-[40px] px-3.5 rounded-xl border border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-xs font-semibold text-zinc-200 flex items-center gap-1.5"
-            >
-              <Maximize2 className="w-3.5 h-3.5" />
-              <span>집중 전체화면</span>
-            </button>
+            <div className="flex items-center gap-2">
+              {supportsWakeLock && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = !keepScreenAwake;
+                    setKeepScreenAwake(next);
+                    onShowToast(
+                      next
+                        ? "측정 중 화면 꺼짐 방지가 켜졌습니다."
+                        : "화면 꺼짐 방지가 꺼졌습니다."
+                    );
+                  }}
+                  className={`min-h-[40px] px-3 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+                    keepScreenAwake
+                      ? "border-violet-500 bg-violet-600/20 text-violet-300"
+                      : "border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-zinc-300"
+                  }`}
+                  title="측정하는 동안 화면이 꺼지지 않도록 유지"
+                >
+                  <Sun className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">{keepScreenAwake ? "화면 유지중" : "화면 유지"}</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => onSetFocusFullscreen(true)}
+                className="min-h-[40px] px-3.5 rounded-xl border border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-xs font-semibold text-zinc-200 flex items-center gap-1.5"
+              >
+                <Maximize2 className="w-3.5 h-3.5" />
+                <span>집중 전체화면</span>
+              </button>
+            </div>
           </div>
 
           {/* Active Subject Selector */}

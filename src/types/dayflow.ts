@@ -2,9 +2,7 @@ export type ThemeMode = "auto" | "light" | "dark";
 
 export type ScheduleCategory = "fixed" | "personal";
 
-export type FixedSubType = "assignment" | "event" | "exam" | "class";
-export type PersonalSubType = "study" | "routine";
-export type ScheduleSubType = FixedSubType | PersonalSubType;
+export type ScheduleSubType = string;
 
 export type PriorityLevel = "high" | "medium" | "low";
 
@@ -80,6 +78,7 @@ export interface AppSettings {
   studyWindowStart: string; // HH:mm e.g. "08:00"
   studyWindowEnd: string; // HH:mm e.g. "23:00"
   notificationsEnabled: boolean;
+  customSubTypes: string[];
 }
 
 export interface DayFlowBackupPayload {
