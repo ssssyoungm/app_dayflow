@@ -127,6 +127,7 @@ interface ApiParseResult<T> {
   data: T | null;
   errorMsg: string;
   shouldRetry?: boolean;
+  needsAuthReload?: boolean;
 }
 
 /**
@@ -178,29 +179,45 @@ async function parseApiJson<T>(res: Response): Promise<ApiParseResult<T>> {
     };
   }
 
-  const head = trimmed.slice(0, 800).toLowerCase();
-  const looksLikeHtml = contentType.includes("text/html") || head.startsWith("<!doctype") || head.startsWith("<html");
+  const lowerFull = trimmed.toLowerCase();
+  const resUrlLower = (res.url || "").toLowerCase();
+  const looksLikeHtml =
+    contentType.includes("text/html") ||
+    lowerFull.startsWith("<!doctype") ||
+    lowerFull.startsWith("<html");
 
-  if (looksLikeHtml) {
-    // 1. Auth redirect (e.g., AI Studio preview / iOS Home Screen PWA session expired or Safari ITP blocking cookie)
+  if (looksLikeHtml || res.redirected) {
+    // 1. Auth / cookie check redirect (e.g., AI Studio ais-pre/ais-dev preview or iOS Home Screen PWA missing session cookie)
     if (
       res.redirected ||
-      head.includes("accounts.google.com") ||
-      head.includes("servicelogin") ||
-      head.includes("sign in") ||
-      head.includes("로그인")
+      resUrlLower.includes("__cookie_check") ||
+      lowerFull.includes("__secure-aistudio_auth_flow") ||
+      lowerFull.includes("action required to load your app") ||
+      lowerFull.includes("accounts.google.com") ||
+      lowerFull.includes("servicelogin")
     ) {
+      const isStandalone =
+        typeof window !== "undefined" &&
+        (window.matchMedia?.("(display-mode: standalone)").matches ||
+          (window.navigator as Navigator & { standalone?: boolean }).standalone === true);
+
       return {
         ok: false,
         status: res.status,
         data: null,
-        errorMsg:
-          "인증 세션이 만료되어 AI API 요청이 차단되었습니다. 브라우저를 새로고침해 다시 로그인하거나, 배포된 Render Web Service 주소로 접속해 주세요.",
+        needsAuthReload: true,
+        errorMsg: isStandalone
+          ? "현재 홈 화면 앱의 AI Studio 보안 쿠키가 만료되어 AI 서버 요청이 차단되었습니다. 아래 '세션 새로고침'을 누르거나, Safari에서 열거나, Render Web Service 주소로 홈 화면에 추가해 주세요."
+          : "보안 세션 쿠키가 만료되어 AI 서버 요청이 차단되었습니다. 아래 '세션 새로고침' 버튼을 눌러 다시 연결해 주세요.",
       };
     }
 
     // 2. DayFlow's own SPA index.html returned instead of Express API (Static Site / vite preview without backend)
-    if (head.includes("dayflow") || head.includes("데이플로우") || head.includes('id="root"')) {
+    if (
+      lowerFull.includes("dayflow") ||
+      lowerFull.includes("데이플로우") ||
+      lowerFull.includes('id="root"')
+    ) {
       return {
         ok: false,
         status: res.status,
@@ -301,6 +318,7 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
   const [preparingImage, setPreparingImage] = useState(false);
   const [parsingImage, setParsingImage] = useState(false);
   const [parseError, setParseError] = useState("");
+  const [parseNeedsAuthReload, setParseNeedsAuthReload] = useState(false);
   const [parseSummary, setParseSummary] = useState("");
   const [reviewBlocks, setReviewBlocks] = useState<ReviewBlock[]>([]);
   const [repeatWeeks, setRepeatWeeks] = useState<number>(1);
@@ -318,6 +336,7 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
   const [recommendDate, setRecommendDate] = useState<string>(selectedDate || getTodayStr());
   const [recommending, setRecommending] = useState(false);
   const [recommendError, setRecommendError] = useState("");
+  const [recommendNeedsAuthReload, setRecommendNeedsAuthReload] = useState(false);
   const [strategySummary, setStrategySummary] = useState("");
   const [recommendations, setRecommendations] = useState<AIStudyRecommendation[]>([]);
 
@@ -398,6 +417,7 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
     }
     setParsingImage(true);
     setParseError("");
+    setParseNeedsAuthReload(false);
     try {
       const parsed = await postApiJson<{ summary?: string; items?: ParsedTimetableBlock[] }>(
         "/api/timetable/parse",
@@ -408,6 +428,7 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
         }
       );
       if (!parsed.ok || !parsed.data) {
+        if (parsed.needsAuthReload) setParseNeedsAuthReload(true);
         throw new Error(parsed.errorMsg);
       }
 
@@ -576,6 +597,7 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
     }
 
     setRecommending(true);
+    setRecommendNeedsAuthReload(false);
     setRecommendations([]);
     setStrategySummary("");
 
@@ -615,6 +637,7 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
       });
 
       if (!parsed.ok || !parsed.data) {
+        if (parsed.needsAuthReload) setRecommendNeedsAuthReload(true);
         throw new Error(parsed.errorMsg);
       }
 
@@ -759,8 +782,17 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
         )}
 
         {parseError && (
-          <div className="rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/40 p-3 text-xs text-rose-700 dark:text-rose-300">
-            {parseError}
+          <div className="rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/40 p-3 text-xs text-rose-700 dark:text-rose-300 space-y-2.5">
+            <p className="leading-relaxed">{parseError}</p>
+            {parseNeedsAuthReload && (
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="min-h-[36px] px-3.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold transition-colors"
+              >
+                세션 새로고침
+              </button>
+            )}
           </div>
         )}
 
@@ -1203,8 +1235,17 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
           </button>
 
           {recommendError && (
-            <div className="rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/40 p-3 text-xs text-rose-700 dark:text-rose-300">
-              {recommendError}
+            <div className="rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/40 p-3 text-xs text-rose-700 dark:text-rose-300 space-y-2.5">
+              <p className="leading-relaxed">{recommendError}</p>
+              {recommendNeedsAuthReload && (
+                <button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  className="min-h-[36px] px-3.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold transition-colors"
+                >
+                  세션 새로고침
+                </button>
+              )}
             </div>
           )}
 
