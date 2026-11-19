@@ -8,7 +8,7 @@ export type ScheduleSubType = FixedSubType | PersonalSubType;
 
 export type PriorityLevel = "high" | "medium" | "low";
 
-export type ColorCardId =
+export type PresetColorId =
   | "violet"
   | "indigo"
   | "sky"
@@ -16,6 +16,8 @@ export type ColorCardId =
   | "amber"
   | "rose"
   | "slate";
+
+export type ColorCardId = PresetColorId | (string & {});
 
 export interface ScheduleItem {
   id: string;

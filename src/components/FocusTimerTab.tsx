@@ -15,7 +15,7 @@ import type {
   StudyGoal,
   StudySession,
 } from "../types/dayflow";
-import { COLOR_CARDS } from "../lib/colors";
+import { resolveColorTheme } from "../lib/colors";
 import {
   formatDurationKo,
   formatStopwatchClock,
@@ -514,7 +514,7 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
         ) : (
           <div className="space-y-3">
             {subjectMetrics.map(({ goal, todayMins, weekMins, ratio, count }) => {
-              const theme = COLOR_CARDS[goal.color] || COLOR_CARDS.violet;
+              const theme = resolveColorTheme(goal.color);
               const pct = Math.min(
                 100,
                 Math.round((weekMins / Math.max(1, goal.weeklyTargetMinutes)) * 100)
@@ -525,10 +525,17 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
               );
 
               return (
-                <div key={goal.id} className={`rounded-xl border p-3.5 space-y-2 ${theme.cardClass}`}>
+                <div
+                  key={goal.id}
+                  className={`rounded-xl border p-3.5 space-y-2 ${theme.cardClass}`}
+                  style={theme.cardStyle}
+                >
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 min-w-0">
-                      <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${theme.dotClass}`} />
+                      <span
+                        className={`w-2.5 h-2.5 rounded-full shrink-0 ${theme.dotClass}`}
+                        style={theme.dotStyle}
+                      />
                       <p className="text-sm font-bold text-zinc-900 dark:text-zinc-100 truncate">
                         {goal.subjectName}
                       </p>
@@ -540,8 +547,8 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
 
                   <div className="h-1.5 w-full rounded-full bg-zinc-200/80 dark:bg-zinc-800 overflow-hidden">
                     <div
-                      className="h-full bg-violet-600 rounded-full transition-all"
-                      style={{ width: `${pct}%` }}
+                      className="h-full rounded-full transition-all"
+                      style={{ width: `${pct}%`, ...theme.progressStyle }}
                     />
                   </div>
 

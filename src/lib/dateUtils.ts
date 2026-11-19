@@ -106,7 +106,8 @@ export function computeFreeSlotsForDate(
   minSlotMinutes = 25
 ): FreeSlot[] {
   const startMin = timeToMinutes(windowStart);
-  const endMin = timeToMinutes(windowEnd);
+  const rawEndMin = timeToMinutes(windowEnd);
+  const endMin = rawEndMin === 0 ? 24 * 60 : rawEndMin;
   if (endMin <= startMin) return [];
 
   const now = new Date();

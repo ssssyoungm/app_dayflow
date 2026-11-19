@@ -9,6 +9,7 @@ import {
 import type {
   ActiveStopwatch,
   AppSettings,
+  ColorCardId,
   ScheduleItem,
   StudyGoal,
   StudySession,
@@ -170,6 +171,16 @@ export default function App() {
     setState((prev) => ({
       ...prev,
       studyGoals: prev.studyGoals.filter((g) => g.id !== id),
+    }));
+  };
+
+  const handleUpdateStudyGoalColor = (id: string, color: ColorCardId) => {
+    setState((prev) => ({
+      ...prev,
+      studyGoals: prev.studyGoals.map((g) => (g.id === id ? { ...g, color } : g)),
+      schedules: prev.schedules.map((s) =>
+        s.subjectId === id ? { ...s, color, updatedAt: new Date().toISOString() } : s
+      ),
     }));
   };
 
@@ -338,6 +349,7 @@ export default function App() {
                 onToggleComplete={handleToggleComplete}
                 onStartStopwatchForItem={handleStartStopwatchForItem}
                 onOpenAITimetable={() => setActiveTab("ai")}
+                onShowToast={showToast}
               />
             )}
 
@@ -350,6 +362,7 @@ export default function App() {
                 selectedDate={selectedDate}
                 onAddSchedulesBatch={handleAddSchedulesBatch}
                 onAddStudyGoal={handleAddStudyGoal}
+                onUpdateStudyGoalColor={handleUpdateStudyGoalColor}
                 onDeleteStudyGoal={handleDeleteStudyGoal}
                 onShowToast={showToast}
               />

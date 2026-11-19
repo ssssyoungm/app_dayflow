@@ -1,7 +1,14 @@
-import type { ColorCardId, PriorityLevel, ScheduleCategory, ScheduleSubType } from "../types/dayflow";
+import type { CSSProperties } from "react";
+import type {
+  ColorCardId,
+  PresetColorId,
+  PriorityLevel,
+  ScheduleCategory,
+  ScheduleSubType,
+} from "../types/dayflow";
 
 export interface ColorCardTheme {
-  id: ColorCardId;
+  id: PresetColorId;
   label: string;
   swatchHex: string;
   cardClass: string;
@@ -9,7 +16,7 @@ export interface ColorCardTheme {
   dotClass: string;
 }
 
-export const COLOR_CARDS: Record<ColorCardId, ColorCardTheme> = {
+export const COLOR_CARDS: Record<PresetColorId, ColorCardTheme> = {
   violet: {
     id: "violet",
     label: "퍼플",
@@ -76,6 +83,86 @@ export const COLOR_CARDS: Record<ColorCardId, ColorCardTheme> = {
 };
 
 export const COLOR_CARD_LIST: ColorCardTheme[] = Object.values(COLOR_CARDS);
+
+export function isPresetColorId(val: string): val is PresetColorId {
+  return Object.prototype.hasOwnProperty.call(COLOR_CARDS, val);
+}
+
+export function isValidHexColor(val: string): boolean {
+  return /^#[0-9A-Fa-f]{6}$/.test(val.trim());
+}
+
+export function colorToHex(color: ColorCardId): string {
+  if (isPresetColorId(color)) {
+    return COLOR_CARDS[color].swatchHex;
+  }
+  if (isValidHexColor(color)) {
+    return color.toUpperCase();
+  }
+  return COLOR_CARDS.violet.swatchHex;
+}
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  const clean = hex.replace("#", "");
+  const num = parseInt(clean, 16);
+  return {
+    r: (num >> 16) & 255,
+    g: (num >> 8) & 255,
+    b: num & 255,
+  };
+}
+
+export interface ResolvedColorTheme {
+  hex: string;
+  isCustom: boolean;
+  cardClass: string;
+  cardStyle?: CSSProperties;
+  dotClass: string;
+  dotStyle?: CSSProperties;
+  accentTextClass: string;
+  accentStyle?: CSSProperties;
+  progressStyle: CSSProperties;
+}
+
+/** Resolves either a built-in preset ID or any custom #RRGGBB hex color cleanly for light/dark themes */
+export function resolveColorTheme(color: ColorCardId | undefined): ResolvedColorTheme {
+  const val = (color || "violet").trim();
+  if (isPresetColorId(val)) {
+    const preset = COLOR_CARDS[val];
+    return {
+      hex: preset.swatchHex,
+      isCustom: false,
+      cardClass: preset.cardClass,
+      dotClass: preset.dotClass,
+      accentTextClass: preset.accentTextClass,
+      progressStyle: { backgroundColor: preset.swatchHex },
+    };
+  }
+
+  const hex = isValidHexColor(val) ? val : COLOR_CARDS.violet.swatchHex;
+  const { r, g, b } = hexToRgb(hex);
+
+  return {
+    hex,
+    isCustom: true,
+    cardClass: "",
+    cardStyle: {
+      backgroundColor: `rgba(${r}, ${g}, ${b}, 0.11)`,
+      borderColor: `rgba(${r}, ${g}, ${b}, 0.34)`,
+    },
+    dotClass: "",
+    dotStyle: {
+      backgroundColor: hex,
+    },
+    accentTextClass: "",
+    accentStyle: {
+      color: hex,
+    },
+    progressStyle: {
+      backgroundColor: hex,
+    },
+  };
+}
 
 export const CATEGORY_LABELS: Record<ScheduleCategory, string> = {
   fixed: "고정 일정",

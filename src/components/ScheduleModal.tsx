@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Bell, Calendar, Download, Trash2, X } from "lucide-react";
+import { Bell, Calendar, Download, Palette, Trash2, X } from "lucide-react";
 import type {
   ColorCardId,
   PriorityLevel,
@@ -8,7 +8,7 @@ import type {
   ScheduleSubType,
   StudyGoal,
 } from "../types/dayflow";
-import { COLOR_CARD_LIST } from "../lib/colors";
+import { COLOR_CARD_LIST, colorToHex, isPresetColorId } from "../lib/colors";
 import { exportSchedulesToIcs, downloadTextFile } from "../lib/ics";
 import { generateId } from "../lib/storage";
 import { getTodayStr, timeToMinutes } from "../lib/dateUtils";
@@ -486,6 +486,28 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
                   </button>
                 );
               })}
+
+              <label
+                className={`min-h-[38px] px-3 rounded-xl border text-xs font-medium flex items-center gap-2 cursor-pointer transition-all ${
+                  !isPresetColorId(color)
+                    ? "border-violet-600 dark:border-violet-400 bg-violet-50 dark:bg-violet-950/40 text-zinc-900 dark:text-zinc-50 ring-1 ring-violet-500"
+                    : "border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-900"
+                }`}
+              >
+                <input
+                  type="color"
+                  value={colorToHex(color)}
+                  onChange={(e) => setColor(e.target.value)}
+                  aria-label="일정 자유 색상 선택"
+                  className="sr-only"
+                />
+                <span
+                  className="w-3 h-3 rounded-full border border-black/15 dark:border-white/25 shrink-0"
+                  style={{ backgroundColor: colorToHex(color) }}
+                />
+                <Palette className="w-3.5 h-3.5 shrink-0" />
+                <span>{!isPresetColorId(color) ? colorToHex(color) : "직접 선택"}</span>
+              </label>
             </div>
           </div>
 

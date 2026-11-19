@@ -1,10 +1,11 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Camera,
   Check,
   Clock,
   ImagePlus,
   Loader2,
+  Palette,
   Plus,
   Sparkles,
   Trash2,
@@ -20,7 +21,14 @@ import type {
   StudyGoal,
   StudySession,
 } from "../types/dayflow";
-import { COLOR_CARD_LIST, COLOR_CARDS, PRIORITY_LABELS, SUBTYPE_LABELS } from "../lib/colors";
+import {
+  COLOR_CARD_LIST,
+  PRIORITY_LABELS,
+  SUBTYPE_LABELS,
+  colorToHex,
+  isPresetColorId,
+  resolveColorTheme,
+} from "../lib/colors";
 import {
   WEEKDAY_KO,
   addDays,
@@ -41,6 +49,7 @@ interface AITimetableTabProps {
   selectedDate: string;
   onAddSchedulesBatch: (items: ScheduleItem[]) => void;
   onAddStudyGoal: (goal: StudyGoal) => void;
+  onUpdateStudyGoalColor: (id: string, color: ColorCardId) => void;
   onDeleteStudyGoal: (id: string) => void;
   onShowToast: (msg: string) => void;
 }
@@ -48,6 +57,119 @@ interface AITimetableTabProps {
 interface ReviewBlock extends ParsedTimetableBlock {
   tempId: string;
   selected: boolean;
+}
+
+/**
+ * Compresses & converts uploaded iPhone screenshots / HEIC / large PNGs into a clean JPEG data URL
+ * (max 1600px) so mobile Safari never hits payload limits or invalid MIME issues.
+ */
+async function prepareImageForUpload(
+  file: File
+): Promise<{ dataUrl: string; mimeType: string }> {
+  const readAsDataUrl = (blob: Blob): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === "string") resolve(reader.result);
+        else reject(new Error("이미지를 읽을 수 없습니다."));
+      };
+      reader.onerror = () => reject(new Error("이미지 파일 읽기에 실패했습니다."));
+      reader.readAsDataURL(blob);
+    });
+
+  try {
+    const objectUrl = URL.createObjectURL(file);
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = () => reject(new Error("이미지 디코딩 실패"));
+        el.src = objectUrl;
+      });
+
+      const maxDim = 1600;
+      const scale = Math.min(1, maxDim / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
+      const targetW = Math.max(1, Math.round((img.naturalWidth || 800) * scale));
+      const targetH = Math.max(1, Math.round((img.naturalHeight || 800) * scale));
+
+      const canvas = document.createElement("canvas");
+      canvas.width = targetW;
+      canvas.height = targetH;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        // Fill white background in case PNG has transparency
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, targetW, targetH);
+        ctx.drawImage(img, 0, 0, targetW, targetH);
+        const jpegDataUrl = canvas.toDataURL("image/jpeg", 0.88);
+        if (jpegDataUrl.startsWith("data:image/jpeg;base64,") && jpegDataUrl.length > 64) {
+          return { dataUrl: jpegDataUrl, mimeType: "image/jpeg" };
+        }
+      }
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  } catch {
+    // Fallback to raw FileReader below if canvas decode fails
+  }
+
+  const rawDataUrl = await readAsDataUrl(file);
+  const inferredMime =
+    file.type && file.type.startsWith("image/") && !file.type.includes("heic") && !file.type.includes("heif")
+      ? file.type
+      : "image/jpeg";
+  return { dataUrl: rawDataUrl, mimeType: inferredMime };
+}
+
+/**
+ * Safely parses fetch responses without triggering Safari's
+ * "The string did not match the expected pattern." JSON SyntaxError on HTML/empty responses.
+ */
+async function parseApiJson<T>(res: Response): Promise<{ ok: boolean; status: number; data: T | null; errorMsg: string }> {
+  const rawText = await res.text();
+  let parsed: unknown = null;
+  if (rawText.trim()) {
+    try {
+      parsed = JSON.parse(rawText);
+    } catch {
+      parsed = null;
+    }
+  }
+
+  if (res.ok && parsed && typeof parsed === "object") {
+    return { ok: true, status: res.status, data: parsed as T, errorMsg: "" };
+  }
+
+  const serverError =
+    parsed && typeof parsed === "object" && "error" in parsed && typeof (parsed as { error?: unknown }).error === "string"
+      ? (parsed as { error: string }).error
+      : "";
+
+  if (serverError) {
+    return { ok: false, status: res.status, data: null, errorMsg: serverError };
+  }
+  if (res.status === 413) {
+    return {
+      ok: false,
+      status: res.status,
+      data: null,
+      errorMsg: "이미지 용량이 너무 큽니다. 더 작은 사진으로 다시 시도해 주세요.",
+    };
+  }
+  if (res.status === 502 || res.status === 503 || res.status === 504) {
+    return {
+      ok: false,
+      status: res.status,
+      data: null,
+      errorMsg: "서버가 깨어나는 중이거나 AI 응답이 지연되었습니다. 5~10초 후 다시 눌러 주세요.",
+    };
+  }
+  return {
+    ok: false,
+    status: res.status,
+    data: null,
+    errorMsg: `서버 응답을 처리하지 못했습니다 (HTTP ${res.status}). 잠시 후 다시 시도해 주세요.`,
+  };
 }
 
 export const AITimetableTab: React.FC<AITimetableTabProps> = ({
@@ -58,13 +180,16 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
   selectedDate,
   onAddSchedulesBatch,
   onAddStudyGoal,
+  onUpdateStudyGoalColor,
   onDeleteStudyGoal,
   onShowToast,
 }) => {
   // ---- 1. Everytime Timetable Photo Recognition State ----
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const subjectInputRef = useRef<HTMLInputElement>(null);
   const [imagePreview, setImagePreview] = useState<string>("");
-  const [imageMime, setImageMime] = useState<string>("image/png");
+  const [imageMime, setImageMime] = useState<string>("image/jpeg");
+  const [preparingImage, setPreparingImage] = useState(false);
   const [parsingImage, setParsingImage] = useState(false);
   const [parseError, setParseError] = useState("");
   const [parseSummary, setParseSummary] = useState("");
@@ -87,9 +212,15 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
   const [strategySummary, setStrategySummary] = useState("");
   const [recommendations, setRecommendations] = useState<AIStudyRecommendation[]>([]);
 
+  useEffect(() => {
+    if (selectedDate) {
+      setBaseWeekDate(selectedDate);
+    }
+  }, [selectedDate]);
+
   const weekDatesForRec = useMemo(() => getWeekDates(recommendDate), [recommendDate]);
 
-  // Compute real YPT stopwatch stats per StudyGoal
+  // Compute real stopwatch stats per StudyGoal
   const subjectStats = useMemo(() => {
     const weekSet = new Set(getWeekDates(getTodayStr()));
     return studyGoals.map((g) => {
@@ -118,27 +249,44 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
     return targetDates.flatMap((d) =>
       computeFreeSlotsForDate(d, schedules, settings.studyWindowStart, settings.studyWindowEnd, 25)
     );
-  }, [recommendScope, recommendDate, weekDatesForRec, schedules, settings.studyWindowStart, settings.studyWindowEnd]);
+  }, [
+    recommendScope,
+    recommendDate,
+    weekDatesForRec,
+    schedules,
+    settings.studyWindowStart,
+    settings.studyWindowEnd,
+  ]);
 
-  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    // Reset input value so selecting the same photo again still fires onChange
+    e.target.value = "";
     if (!file) return;
+
     setParseError("");
     setReviewBlocks([]);
     setParseSummary("");
-    setImageMime(file.type || "image/png");
+    setPreparingImage(true);
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") {
-        setImagePreview(reader.result);
-      }
-    };
-    reader.readAsDataURL(file);
+    try {
+      const { dataUrl, mimeType } = await prepareImageForUpload(file);
+      setImagePreview(dataUrl);
+      setImageMime(mimeType);
+    } catch (err) {
+      setParseError(
+        err instanceof Error ? err.message : "사진을 불러오지 못했습니다. PNG 또는 JPG 이미지로 다시 시도해 주세요."
+      );
+    } finally {
+      setPreparingImage(false);
+    }
   };
 
   const handleParseImage = async () => {
-    if (!imagePreview) return;
+    if (!imagePreview) {
+      setParseError("먼저 시간표 또는 일정 사진을 선택해 주세요.");
+      return;
+    }
     setParsingImage(true);
     setParseError("");
     try {
@@ -151,13 +299,15 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
           referenceDate: baseWeekDate,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "시간표 인식에 실패했습니다.");
+
+      const parsed = await parseApiJson<{ summary?: string; items?: ParsedTimetableBlock[] }>(res);
+      if (!parsed.ok || !parsed.data) {
+        throw new Error(parsed.errorMsg);
       }
-      const items: ParsedTimetableBlock[] = Array.isArray(data.items) ? data.items : [];
+
+      const items: ParsedTimetableBlock[] = Array.isArray(parsed.data.items) ? parsed.data.items : [];
       const paletteCycle: ColorCardId[] = ["violet", "indigo", "sky", "emerald", "amber", "rose"];
-      setParseSummary(data.summary || "");
+      setParseSummary(parsed.data.summary || "");
       setReviewBlocks(
         items.map((it, idx) => ({
           ...it,
@@ -167,10 +317,21 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
         }))
       );
       if (items.length === 0) {
-        setParseError("이미지에서 일정 항목을 찾지 못했습니다. 더 선명한 캡처 이미지로 다시 시도해 주세요.");
+        setParseError(
+          parsed.data.summary
+            ? `${parsed.data.summary} 더 선명한 시간표 캡처 이미지로 다시 시도해 주세요.`
+            : "이미지에서 일정 항목을 찾지 못했습니다. 더 선명한 캡처 이미지로 다시 시도해 주세요."
+        );
+      } else {
+        onShowToast(`${items.length}개의 시간표 항목을 인식했습니다.`);
       }
     } catch (err) {
-      setParseError(err instanceof Error ? err.message : "네트워크 오류가 발생했습니다.");
+      const msg = err instanceof Error ? err.message : "네트워크 오류가 발생했습니다.";
+      setParseError(
+        msg.includes("expected pattern")
+          ? "응답을 해석하는 중 오류가 발생했습니다. 사진을 다시 선택해 시도해 주세요."
+          : msg
+      );
     } finally {
       setParsingImage(false);
     }
@@ -244,7 +405,11 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
   const handleCreateGoal = (e: React.FormEvent) => {
     e.preventDefault();
     const name = subjectName.trim();
-    if (!name) return;
+    if (!name) {
+      onShowToast("과목명을 입력해 주세요.");
+      subjectInputRef.current?.focus();
+      return;
+    }
 
     const hours = Math.max(0.5, Number(weeklyTargetHours) || 3);
     const sessionMins = Math.max(15, Math.min(180, Number(defaultSessionMins) || 50));
@@ -259,28 +424,59 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
       createdAt: new Date().toISOString(),
     });
     setSubjectName("");
+    setRecommendError("");
     onShowToast(`"${name}" 공부 목표가 추가되었습니다.`);
   };
 
   const handleGenerateRecommendations = async () => {
+    setRecommendError("");
+
     if (studyGoals.length === 0) {
-      setRecommendError("먼저 공부 목표 과목을 1개 이상 등록해 주세요.");
+      const msg = "먼저 위 '개인 공부 목표 설정'에서 공부할 과목을 1개 이상 추가해 주세요.";
+      setRecommendError(msg);
+      onShowToast(msg);
+      subjectInputRef.current?.focus();
       return;
     }
-    if (availableFreeSlots.length === 0) {
-      setRecommendError("선택한 기간의 공부 가능 시간대 안에 남은 빈 시간대가 없습니다.");
+
+    // Determine effective targetDate and freeSlots; if today has 0 remaining slots (e.g. late night),
+    // automatically use tomorrow so the user isn't blocked.
+    let effectiveDate = recommendDate;
+    let slotsToUse = availableFreeSlots;
+
+    if (slotsToUse.length === 0 && recommendScope === "day" && recommendDate === getTodayStr()) {
+      const tomorrow = addDays(getTodayStr(), 1);
+      const tomorrowSlots = computeFreeSlotsForDate(
+        tomorrow,
+        schedules,
+        settings.studyWindowStart,
+        settings.studyWindowEnd,
+        25
+      );
+      if (tomorrowSlots.length > 0) {
+        effectiveDate = tomorrow;
+        slotsToUse = tomorrowSlots;
+        setRecommendDate(tomorrow);
+        onShowToast("오늘 남은 공부 시간이 없어 내일 빈 시간대 기준으로 추천을 생성합니다.");
+      }
+    }
+
+    if (slotsToUse.length === 0) {
+      const msg =
+        "선택한 날짜의 공부 가능 시간대 안에 남은 빈 시간이 없습니다. 날짜를 내일로 바꾸거나 설정에서 공부 시간대를 늘려 주세요.";
+      setRecommendError(msg);
+      onShowToast("남은 빈 시간대가 없습니다.");
       return;
     }
 
     setRecommending(true);
-    setRecommendError("");
     setRecommendations([]);
     setStrategySummary("");
 
     try {
-      const targetDatesSet = new Set(
-        recommendScope === "day" ? [recommendDate] : weekDatesForRec
-      );
+      const effectiveDates =
+        recommendScope === "day" ? [effectiveDate] : getWeekDates(effectiveDate);
+      const targetDatesSet = new Set(effectiveDates);
       const existingEvents = schedules
         .filter((s) => targetDatesSet.has(s.date))
         .map((s) => ({
@@ -296,9 +492,9 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          targetDate: recommendDate,
+          targetDate: effectiveDate,
           mode: recommendScope,
-          freeSlots: availableFreeSlots,
+          freeSlots: slotsToUse,
           existingEvents,
           studyGoals: subjectStats.map((st) => ({
             id: st.goal.id,
@@ -313,15 +509,30 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
         }),
       });
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "공부 추천 생성에 실패했습니다.");
+      const parsed = await parseApiJson<{
+        strategySummary?: string;
+        recommendations?: AIStudyRecommendation[];
+      }>(res);
+
+      if (!parsed.ok || !parsed.data) {
+        throw new Error(parsed.errorMsg);
       }
 
-      setStrategySummary(data.strategySummary || "");
-      setRecommendations(Array.isArray(data.recommendations) ? data.recommendations : []);
+      const recs = Array.isArray(parsed.data.recommendations) ? parsed.data.recommendations : [];
+      setStrategySummary(parsed.data.strategySummary || "");
+      setRecommendations(recs);
+      if (recs.length === 0) {
+        setRecommendError("추천할 공부 블록을 생성하지 못했습니다. 다시 시도해 주세요.");
+      } else {
+        onShowToast(`${recs.length}개의 빈 시간대 공부 블록을 추천했습니다.`);
+      }
     } catch (err) {
-      setRecommendError(err instanceof Error ? err.message : "네트워크 오류가 발생했습니다.");
+      const msg = err instanceof Error ? err.message : "네트워크 오류가 발생했습니다.";
+      setRecommendError(
+        msg.includes("expected pattern")
+          ? "서버 응답을 해석하지 못했습니다. 잠시 후 다시 시도해 주세요."
+          : msg
+      );
     } finally {
       setRecommending(false);
     }
@@ -363,6 +574,9 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
     onShowToast(`${newItems.length}개의 추천 공부 스케줄을 개인 일정에 배치했습니다.`);
   };
 
+  const currentCustomHex = colorToHex(goalColor);
+  const isCustomGoalColor = !isPresetColorId(goalColor);
+
   return (
     <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">
       {/* ================= LEFT: EVERYTIME TIMETABLE AI PHOTO PARSER ================= */}
@@ -389,14 +603,19 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="w-full rounded-2xl border border-dashed border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950/50 hover:border-violet-500 dark:hover:border-violet-500 py-10 px-4 flex flex-col items-center justify-center gap-2 transition-colors"
+            disabled={preparingImage}
+            className="w-full rounded-2xl border border-dashed border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950/50 hover:border-violet-500 dark:hover:border-violet-500 py-10 px-4 flex flex-col items-center justify-center gap-2 transition-colors disabled:opacity-60"
           >
-            <ImagePlus className="w-7 h-7 text-violet-600 dark:text-violet-400" />
+            {preparingImage ? (
+              <Loader2 className="w-7 h-7 text-violet-600 dark:text-violet-400 animate-spin" />
+            ) : (
+              <ImagePlus className="w-7 h-7 text-violet-600 dark:text-violet-400" />
+            )}
             <span className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
-              시간표 또는 일정 사진 선택하기
+              {preparingImage ? "사진을 최적화하는 중..." : "시간표 또는 일정 사진 선택하기"}
             </span>
             <span className="text-xs text-zinc-500 dark:text-zinc-400">
-              아이폰 사진 보관함 · 스크린샷(PNG, JPG) 지원
+              아이폰 사진 보관함 · 에브리타임 스크린샷(PNG, JPG) 자동 최적화 지원
             </span>
           </button>
         ) : (
@@ -412,6 +631,7 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
+                disabled={parsingImage || preparingImage}
                 className="min-h-[42px] px-3.5 rounded-xl border border-zinc-200 dark:border-zinc-700 text-xs font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800"
               >
                 다른 사진 선택
@@ -419,7 +639,7 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
               <button
                 type="button"
                 onClick={handleParseImage}
-                disabled={parsingImage}
+                disabled={parsingImage || preparingImage}
                 className="flex-1 min-h-[44px] px-4 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-60 text-white text-xs font-semibold flex items-center justify-center gap-2 transition-colors"
               >
                 {parsingImage ? (
@@ -505,18 +725,38 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
                     {blk.selected && <Check className="w-3.5 h-3.5" />}
                   </button>
                   <div className="flex-1 min-w-0">
-                    <input
-                      type="text"
-                      value={blk.title}
-                      onChange={(e) =>
-                        setReviewBlocks((prev) =>
-                          prev.map((x) =>
-                            x.tempId === blk.tempId ? { ...x, title: e.target.value } : x
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={blk.title}
+                        onChange={(e) =>
+                          setReviewBlocks((prev) =>
+                            prev.map((x) =>
+                              x.tempId === blk.tempId ? { ...x, title: e.target.value } : x
+                            )
                           )
-                        )
-                      }
-                      className="w-full bg-transparent text-xs font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none border-b border-transparent focus:border-violet-500"
-                    />
+                        }
+                        className="flex-1 min-w-0 bg-transparent text-xs font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none border-b border-transparent focus:border-violet-500"
+                      />
+                      <label
+                        className="relative w-5 h-5 rounded-full border border-zinc-300 dark:border-zinc-600 shrink-0 cursor-pointer overflow-hidden"
+                        style={{ backgroundColor: colorToHex(blk.color || "violet") }}
+                        title="블록 색상 변경"
+                      >
+                        <input
+                          type="color"
+                          value={colorToHex(blk.color || "violet")}
+                          onChange={(e) =>
+                            setReviewBlocks((prev) =>
+                              prev.map((x) =>
+                                x.tempId === blk.tempId ? { ...x, color: e.target.value } : x
+                              )
+                            )
+                          }
+                          className="sr-only"
+                        />
+                      </label>
+                    </div>
                     <p className="mt-1 text-[11px] text-zinc-600 dark:text-zinc-400 tabular-nums">
                       {blk.specificDate
                         ? blk.specificDate
@@ -555,13 +795,14 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
               개인 공부 목표 설정
             </h2>
             <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-              과목별 주간 목표 시간을 설정하면, 열품타 스톱워치의 실제 측정 시간이 다음 AI 추천에 자동 반영됩니다.
+              과목별 주간 목표 시간과 원하는 색상을 자유롭게 설정하면, 타이머 측정 시간이 다음 AI 추천에 자동 반영됩니다.
             </p>
           </div>
 
           <form onSubmit={handleCreateGoal} className="space-y-3">
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
               <input
+                ref={subjectInputRef}
                 type="text"
                 value={subjectName}
                 onChange={(e) => setSubjectName(e.target.value)}
@@ -619,73 +860,134 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
               </div>
             </div>
 
-            <div className="flex items-center gap-1.5 flex-wrap">
-              {COLOR_CARD_LIST.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  onClick={() => setGoalColor(c.id)}
-                  className={`h-7 px-2.5 rounded-lg border text-[11px] flex items-center gap-1.5 ${
-                    goalColor === c.id
+            {/* Free Color Picker + Quick Presets */}
+            <div className="space-y-1.5">
+              <span className="block text-[11px] font-medium text-zinc-500 dark:text-zinc-400">
+                목표 색상 선택 (기본 색상 또는 자유 색상 지정)
+              </span>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {COLOR_CARD_LIST.map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => setGoalColor(c.id)}
+                    className={`min-h-[34px] px-2.5 rounded-lg border text-[11px] flex items-center gap-1.5 transition-colors ${
+                      goalColor === c.id
+                        ? "border-violet-600 bg-violet-50 dark:bg-violet-950/40 text-zinc-900 dark:text-zinc-50 font-semibold"
+                        : "border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-900"
+                    }`}
+                  >
+                    <span
+                      className="w-2.5 h-2.5 rounded-full shrink-0"
+                      style={{ backgroundColor: c.swatchHex }}
+                    />
+                    <span>{c.label}</span>
+                  </button>
+                ))}
+
+                {/* Custom Free Color Wheel Picker */}
+                <label
+                  className={`min-h-[34px] px-2.5 rounded-lg border text-[11px] flex items-center gap-1.5 cursor-pointer transition-colors ${
+                    isCustomGoalColor
                       ? "border-violet-600 bg-violet-50 dark:bg-violet-950/40 text-zinc-900 dark:text-zinc-50 font-semibold"
-                      : "border-zinc-200 dark:border-zinc-800 text-zinc-500 dark:text-zinc-400"
+                      : "border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-900"
                   }`}
                 >
-                  <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: c.swatchHex }} />
-                  <span>{c.label}</span>
-                </button>
-              ))}
+                  <input
+                    type="color"
+                    value={currentCustomHex}
+                    onChange={(e) => setGoalColor(e.target.value)}
+                    aria-label="목표 자유 색상 선택"
+                    className="sr-only"
+                  />
+                  <span
+                    className="w-3 h-3 rounded-full border border-black/15 dark:border-white/25 shrink-0"
+                    style={{ backgroundColor: currentCustomHex }}
+                  />
+                  <Palette className="w-3 h-3 shrink-0" />
+                  <span>{isCustomGoalColor ? currentCustomHex : "직접 선택"}</span>
+                </label>
+              </div>
             </div>
           </form>
 
-          {/* Existing Goals List with Real Actual vs Planned Feedback */}
+          {/* Existing Goals List with Per-Goal Free Color Customizer */}
           {subjectStats.length > 0 && (
             <div className="space-y-2 pt-2 border-t border-zinc-200 dark:border-zinc-800">
-              {subjectStats.map(({ goal, completedThisWeekMinutes, actualToPlannedRatio, sessionCount }) => {
-                const theme = COLOR_CARDS[goal.color] || COLOR_CARDS.violet;
-                const pct = Math.min(
-                  100,
-                  Math.round((completedThisWeekMinutes / Math.max(1, goal.weeklyTargetMinutes)) * 100)
-                );
-                return (
-                  <div
-                    key={goal.id}
-                    className={`rounded-xl border p-3 ${theme.cardClass}`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className={`w-2 h-2 rounded-full shrink-0 ${theme.dotClass}`} />
-                          <p className="text-xs font-bold text-zinc-900 dark:text-zinc-100 truncate">
-                            {goal.subjectName}
+              {subjectStats.map(
+                ({ goal, completedThisWeekMinutes, actualToPlannedRatio, sessionCount }) => {
+                  const theme = resolveColorTheme(goal.color);
+                  const pct = Math.min(
+                    100,
+                    Math.round(
+                      (completedThisWeekMinutes / Math.max(1, goal.weeklyTargetMinutes)) * 100
+                    )
+                  );
+                  return (
+                    <div
+                      key={goal.id}
+                      className={`rounded-xl border p-3 ${theme.cardClass}`}
+                      style={theme.cardStyle}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={`w-2.5 h-2.5 rounded-full shrink-0 ${theme.dotClass}`}
+                              style={theme.dotStyle}
+                            />
+                            <p className="text-xs font-bold text-zinc-900 dark:text-zinc-100 truncate">
+                              {goal.subjectName}
+                            </p>
+                          </div>
+                          <p className="mt-0.5 text-[11px] text-zinc-600 dark:text-zinc-400 tabular-nums">
+                            이번 주 {formatDurationKo(completedThisWeekMinutes)} / 목표{" "}
+                            {formatDurationKo(goal.weeklyTargetMinutes)} ({pct}%) ·{" "}
+                            {sessionCount > 0
+                              ? `실제 소요 ${actualToPlannedRatio.toFixed(2)}x (${sessionCount}회)`
+                              : `기본 ${goal.defaultSessionMinutes}분`}
                           </p>
                         </div>
-                        <p className="mt-0.5 text-[11px] text-zinc-600 dark:text-zinc-400 tabular-nums">
-                          이번 주 {formatDurationKo(completedThisWeekMinutes)} / 목표{" "}
-                          {formatDurationKo(goal.weeklyTargetMinutes)} ({pct}%) ·{" "}
-                          {sessionCount > 0
-                            ? `실제 소요 ${actualToPlannedRatio.toFixed(2)}x (${sessionCount}회)`
-                            : `기본 ${goal.defaultSessionMinutes}분`}
-                        </p>
+
+                        <div className="flex items-center gap-1 shrink-0">
+                          <label
+                            className="min-h-[34px] px-2 rounded-lg border border-zinc-200/90 dark:border-zinc-700/80 bg-white/80 dark:bg-zinc-900/80 hover:bg-white dark:hover:bg-zinc-800 flex items-center gap-1.5 cursor-pointer text-[11px] font-medium text-zinc-700 dark:text-zinc-300"
+                            title={`${goal.subjectName} 색상 자유 변경`}
+                          >
+                            <input
+                              type="color"
+                              value={theme.hex}
+                              onChange={(e) => onUpdateStudyGoalColor(goal.id, e.target.value)}
+                              aria-label={`${goal.subjectName} 색상 변경`}
+                              className="sr-only"
+                            />
+                            <span
+                              className="w-3.5 h-3.5 rounded-full border border-black/15 dark:border-white/25 shrink-0"
+                              style={{ backgroundColor: theme.hex }}
+                            />
+                            <span className="hidden sm:inline">색상</span>
+                          </label>
+
+                          <button
+                            type="button"
+                            onClick={() => onDeleteStudyGoal(goal.id)}
+                            className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-zinc-400 hover:text-rose-600 hover:bg-white/60 dark:hover:bg-zinc-900/60"
+                            aria-label={`${goal.subjectName} 목표 삭제`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => onDeleteStudyGoal(goal.id)}
-                        className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-zinc-400 hover:text-rose-600 hover:bg-white/60 dark:hover:bg-zinc-900/60"
-                        aria-label={`${goal.subjectName} 목표 삭제`}
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      <div className="mt-2 h-1.5 w-full rounded-full bg-zinc-200/70 dark:bg-zinc-800 overflow-hidden">
+                        <div
+                          className="h-full rounded-full transition-all"
+                          style={{ width: `${pct}%`, ...theme.progressStyle }}
+                        />
+                      </div>
                     </div>
-                    <div className="mt-2 h-1.5 w-full rounded-full bg-zinc-200/70 dark:bg-zinc-800 overflow-hidden">
-                      <div
-                        className="h-full rounded-full bg-violet-600 transition-all"
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                }
+              )}
             </div>
           )}
         </section>
@@ -737,21 +1039,37 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
           </div>
 
           {/* Detected Free Slots Preview */}
-          <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/60 p-3 space-y-1.5">
+          <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/60 p-3 space-y-2">
             <p className="text-xs font-semibold text-zinc-800 dark:text-zinc-200 tabular-nums">
-              탐지된 빈 시간대 ({availableFreeSlots.length}구간 · 설정 {settings.studyWindowStart}~{settings.studyWindowEnd})
+              탐지된 빈 시간대 ({availableFreeSlots.length}구간 · 설정 {settings.studyWindowStart}~
+              {settings.studyWindowEnd})
             </p>
             {availableFreeSlots.length === 0 ? (
-              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                25분 이상 연속된 빈 시간이 없습니다. 설정에서 공부 가능 시간대를 조정하거나 다른 날짜를 선택해 주세요.
-              </p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                  {recommendDate === getTodayStr()
+                    ? "오늘 남은 공부 시간대가 없습니다. 추천 버튼을 누르면 내일 기준으로 자동 추천합니다."
+                    : "25분 이상 연속된 빈 시간이 없습니다. 날짜를 바꾸거나 설정에서 공부 시간대를 조정해 주세요."}
+                </p>
+                {recommendDate === getTodayStr() && (
+                  <button
+                    type="button"
+                    onClick={() => setRecommendDate(addDays(getTodayStr(), 1))}
+                    className="min-h-[32px] px-2.5 rounded-lg border border-violet-300 dark:border-violet-700 text-[11px] font-semibold text-violet-700 dark:text-violet-300 hover:bg-violet-50 dark:hover:bg-violet-950/40 whitespace-nowrap"
+                  >
+                    내일로 변경
+                  </button>
+                )}
+              </div>
             ) : (
               <p className="text-[11px] text-zinc-600 dark:text-zinc-400 tabular-nums leading-relaxed">
                 {availableFreeSlots
                   .slice(0, 6)
                   .map(
                     (s) =>
-                      `${s.date.slice(5)}(${WEEKDAY_KO[parseLocalDate(s.date).getDay()]}) ${s.startTime}–${s.endTime}`
+                      `${s.date.slice(5)}(${WEEKDAY_KO[parseLocalDate(s.date).getDay()]}) ${
+                        s.startTime
+                      }–${s.endTime}`
                   )
                   .join(" · ")}
                 {availableFreeSlots.length > 6 ? ` 외 ${availableFreeSlots.length - 6}개` : ""}
@@ -759,10 +1077,16 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
             )}
           </div>
 
+          {studyGoals.length === 0 && (
+            <p className="text-[11px] text-amber-700 dark:text-amber-400">
+              안내: 추천을 받으려면 위 &lsquo;개인 공부 목표 설정&rsquo;에서 과목을 먼저 1개 이상 추가해 주세요.
+            </p>
+          )}
+
           <button
             type="button"
             onClick={handleGenerateRecommendations}
-            disabled={recommending || studyGoals.length === 0 || availableFreeSlots.length === 0}
+            disabled={recommending}
             className="w-full min-h-[44px] rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-xs font-semibold flex items-center justify-center gap-2 transition-colors"
           >
             {recommending ? (
@@ -793,31 +1117,44 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
               )}
 
               <div className="space-y-2">
-                {recommendations.map((rec, i) => (
-                  <div
-                    key={`${rec.date}-${rec.startTime}-${i}`}
-                    className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/60 p-3 flex items-start justify-between gap-3"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs font-bold text-zinc-900 dark:text-zinc-100">
-                        {rec.subjectName} · {formatDurationKo(rec.plannedMinutes)}
-                      </p>
-                      <p className="mt-0.5 text-[11px] text-zinc-600 dark:text-zinc-400 tabular-nums">
-                        {formatKoreanDateFull(rec.date)} · {rec.startTime}–{rec.endTime}
-                      </p>
-                      <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
-                        {rec.reason}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleAcceptRecommendations([rec])}
-                      className="min-h-[36px] px-3 rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-[11px] font-semibold shrink-0 whitespace-nowrap"
+                {recommendations.map((rec, i) => {
+                  const matchedGoal = studyGoals.find(
+                    (g) => g.id === rec.subjectId || g.subjectName === rec.subjectName
+                  );
+                  const recTheme = resolveColorTheme(matchedGoal?.color || "violet");
+                  return (
+                    <div
+                      key={`${rec.date}-${rec.startTime}-${i}`}
+                      className={`rounded-xl border p-3 flex items-start justify-between gap-3 ${recTheme.cardClass}`}
+                      style={recTheme.cardStyle}
                     >
-                      배치
-                    </button>
-                  </div>
-                ))}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className={`w-2 h-2 rounded-full shrink-0 ${recTheme.dotClass}`}
+                            style={recTheme.dotStyle}
+                          />
+                          <p className="text-xs font-bold text-zinc-900 dark:text-zinc-100">
+                            {rec.subjectName} · {formatDurationKo(rec.plannedMinutes)}
+                          </p>
+                        </div>
+                        <p className="mt-0.5 text-[11px] text-zinc-600 dark:text-zinc-400 tabular-nums">
+                          {formatKoreanDateFull(rec.date)} · {rec.startTime}–{rec.endTime}
+                        </p>
+                        <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
+                          {rec.reason}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleAcceptRecommendations([rec])}
+                        className="min-h-[36px] px-3 rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-[11px] font-semibold shrink-0 whitespace-nowrap"
+                      >
+                        배치
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
 
               <button

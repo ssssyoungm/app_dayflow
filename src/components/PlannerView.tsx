@@ -13,9 +13,9 @@ import {
 import type { AppSettings, ScheduleCategory, ScheduleItem } from "../types/dayflow";
 import {
   CATEGORY_LABELS,
-  COLOR_CARDS,
   PRIORITY_LABELS,
   SUBTYPE_LABELS,
+  resolveColorTheme,
 } from "../lib/colors";
 import {
   WEEKDAY_KO,
@@ -45,6 +45,7 @@ interface PlannerViewProps {
   onToggleComplete: (id: string) => void;
   onStartStopwatchForItem: (item: ScheduleItem) => void;
   onOpenAITimetable: () => void;
+  onShowToast: (msg: string) => void;
 }
 
 export const PlannerView: React.FC<PlannerViewProps> = ({
@@ -57,6 +58,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
   onToggleComplete,
   onStartStopwatchForItem,
   onOpenAITimetable,
+  onShowToast,
 }) => {
   const [plannerMode, setPlannerMode] = useState<PlannerMode>("daily");
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
@@ -174,13 +176,23 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
         ? weekDates.flatMap((d) => weeklyMap[d] || [])
         : Object.values(monthlyFilteredMap).flat();
 
-    if (itemsToExport.length === 0) return;
+    if (itemsToExport.length === 0) {
+      if (schedules.length > 0) {
+        const ics = exportSchedulesToIcs(schedules, "데이플로우_전체일정");
+        downloadTextFile(`dayflow_all_${selectedDate}.ics`, ics, "text/calendar;charset=utf-8");
+        onShowToast(`현재 화면에 일정이 없어 전체 ${schedules.length}건의 일정을 .ics로 내보냈습니다.`);
+      } else {
+        onShowToast("내보낼 일정이 없습니다. 먼저 일정을 등록해 주세요.");
+      }
+      return;
+    }
     const ics = exportSchedulesToIcs(itemsToExport, `DayFlow_${plannerMode}`);
     downloadTextFile(`dayflow_${plannerMode}_${selectedDate}.ics`, ics, "text/calendar;charset=utf-8");
+    onShowToast(`${itemsToExport.length}건의 일정을 .ics 파일로 내보냈습니다.`);
   };
 
   const renderScheduleCard = (item: ScheduleItem) => {
-    const theme = COLOR_CARDS[item.color] || COLOR_CARDS.violet;
+    const theme = resolveColorTheme(item.color);
     const isDueToday = item.dueDate === selectedDate && item.date !== selectedDate;
 
     return (
@@ -189,6 +201,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
         className={`group rounded-2xl border p-3.5 transition-colors ${theme.cardClass} ${
           item.completed ? "opacity-60" : ""
         }`}
+        style={theme.cardStyle}
       >
         <div className="flex items-start gap-3">
           <button
@@ -210,7 +223,10 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
             className="flex-1 min-w-0 text-left"
           >
             <div className="flex items-center gap-2">
-              <span className={`w-2 h-2 rounded-full shrink-0 ${theme.dotClass}`} />
+              <span
+                className={`w-2 h-2 rounded-full shrink-0 ${theme.dotClass}`}
+                style={theme.dotStyle}
+              />
               <p
                 className={`text-sm font-semibold truncate ${
                   item.completed
@@ -223,7 +239,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
             </div>
 
             <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-zinc-600 dark:text-zinc-400 tabular-nums">
-              <span className={`font-medium ${theme.accentTextClass}`}>
+              <span className={`font-medium ${theme.accentTextClass}`} style={theme.accentStyle}>
                 {CATEGORY_LABELS[item.category]}
               </span>
               <span aria-hidden="true">·</span>
@@ -593,7 +609,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                 ) : (
                   <div className="space-y-1.5">
                     {items.map((item) => {
-                      const theme = COLOR_CARDS[item.color] || COLOR_CARDS.violet;
+                      const theme = resolveColorTheme(item.color);
                       return (
                         <button
                           key={item.id}
@@ -602,9 +618,13 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                           className={`w-full text-left rounded-xl border px-2.5 py-2 transition-colors ${theme.cardClass} ${
                             item.completed ? "opacity-55 line-through" : ""
                           }`}
+                          style={theme.cardStyle}
                         >
                           <div className="flex items-center gap-1.5">
-                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${theme.dotClass}`} />
+                            <span
+                              className={`w-1.5 h-1.5 rounded-full shrink-0 ${theme.dotClass}`}
+                              style={theme.dotStyle}
+                            />
                             <p className="text-xs font-semibold text-zinc-900 dark:text-zinc-100 truncate">
                               {item.title}
                             </p>
@@ -684,11 +704,12 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
 
                     <div className="mt-1 space-y-1 w-full hidden sm:block">
                       {items.slice(0, 2).map((item) => {
-                        const theme = COLOR_CARDS[item.color] || COLOR_CARDS.violet;
+                        const theme = resolveColorTheme(item.color);
                         return (
                           <div
                             key={item.id}
                             className={`rounded-md border px-1.5 py-0.5 text-[11px] font-medium truncate ${theme.cardClass} text-zinc-900 dark:text-zinc-100`}
+                            style={theme.cardStyle}
                           >
                             {item.dueDate === cell.dateStr ? `[마감] ${item.title}` : item.title}
                           </div>
@@ -704,14 +725,16 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                     {/* Mobile compact dot indicator */}
                     {items.length > 0 && (
                       <div className="mt-auto flex items-center gap-1 sm:hidden pt-1">
-                        {items.slice(0, 3).map((item) => (
-                          <span
-                            key={item.id}
-                            className={`w-1.5 h-1.5 rounded-full ${
-                              (COLOR_CARDS[item.color] || COLOR_CARDS.violet).dotClass
-                            }`}
-                          />
-                        ))}
+                        {items.slice(0, 3).map((item) => {
+                          const dotTheme = resolveColorTheme(item.color);
+                          return (
+                            <span
+                              key={item.id}
+                              className={`w-1.5 h-1.5 rounded-full ${dotTheme.dotClass}`}
+                              style={dotTheme.dotStyle}
+                            />
+                          );
+                        })}
                       </div>
                     )}
                   </button>
