@@ -1,9 +1,12 @@
 import "dotenv/config";
 import express, { type NextFunction, type Request, type Response } from "express";
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenAI, Type, type GenerateContentParameters, type GenerateContentResponse } from "@google/genai";
+import * as webpush from "web-push";
+import type { PushSubscription } from "web-push";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -614,6 +617,188 @@ ${
     } catch (err) {
       return handleGeminiError(res, err, "AI 공부 시간 추천 생성 중 오류가 발생했습니다.");
     }
+  });
+
+  // 3. Background Web Push Reminder Scheduler (delivers top-of-screen banners even when user is in another app)
+  interface StoredPushReminder {
+    key: string;
+    title: string;
+    body: string;
+    triggerAtEpoch: number;
+    sent: boolean;
+  }
+
+  interface StoredPushEntry {
+    subscription: PushSubscription;
+    reminders: StoredPushReminder[];
+    updatedAt: number;
+  }
+
+  const vapidFilePath = path.join(os.tmpdir(), "dayflow-vapid.json");
+  const pushStorePath = path.join(os.tmpdir(), "dayflow-push-reminders.json");
+
+  function loadOrCreateVapidKeys(): { publicKey: string; privateKey: string } {
+    const envPub = process.env.VAPID_PUBLIC_KEY?.trim();
+    const envPriv = process.env.VAPID_PRIVATE_KEY?.trim();
+    if (envPub && envPriv) {
+      return { publicKey: envPub, privateKey: envPriv };
+    }
+    try {
+      if (fs.existsSync(vapidFilePath)) {
+        const parsed = JSON.parse(fs.readFileSync(vapidFilePath, "utf-8")) as {
+          publicKey?: string;
+          privateKey?: string;
+        };
+        if (parsed.publicKey && parsed.privateKey) {
+          return { publicKey: parsed.publicKey, privateKey: parsed.privateKey };
+        }
+      }
+    } catch {
+      // fallback to generate below
+    }
+    const generated = webpush.generateVAPIDKeys();
+    try {
+      fs.writeFileSync(vapidFilePath, JSON.stringify(generated), "utf-8");
+    } catch {
+      // non-fatal
+    }
+    return generated;
+  }
+
+  const vapidKeys = loadOrCreateVapidKeys();
+  const vapidSubject = process.env.VAPID_SUBJECT?.trim() || "mailto:dayflow-alerts@example.com";
+  webpush.setVapidDetails(vapidSubject, vapidKeys.publicKey, vapidKeys.privateKey);
+
+  const pushStore = new Map<string, StoredPushEntry>();
+
+  function loadPushStore() {
+    try {
+      if (!fs.existsSync(pushStorePath)) return;
+      const raw = JSON.parse(fs.readFileSync(pushStorePath, "utf-8")) as StoredPushEntry[];
+      if (!Array.isArray(raw)) return;
+      for (const entry of raw) {
+        if (entry?.subscription?.endpoint && Array.isArray(entry.reminders)) {
+          pushStore.set(entry.subscription.endpoint, entry);
+        }
+      }
+    } catch {
+      // ignore corrupt tmp cache
+    }
+  }
+
+  function persistPushStore() {
+    try {
+      fs.writeFileSync(pushStorePath, JSON.stringify(Array.from(pushStore.values())), "utf-8");
+    } catch {
+      // non-fatal
+    }
+  }
+
+  loadPushStore();
+
+  async function dispatchDuePushReminders() {
+    const now = Date.now();
+    let mutated = false;
+
+    for (const [endpoint, entry] of pushStore.entries()) {
+      // Prune expired reminders older than 2 hours
+      const beforeLen = entry.reminders.length;
+      entry.reminders = entry.reminders.filter((r) => now - r.triggerAtEpoch < 2 * 60 * 60 * 1000);
+      if (entry.reminders.length !== beforeLen) mutated = true;
+
+      for (const reminder of entry.reminders) {
+        if (reminder.sent) continue;
+        // Fire within a 10-minute catch-up window once triggerAtEpoch is reached
+        if (now >= reminder.triggerAtEpoch && now <= reminder.triggerAtEpoch + 10 * 60 * 1000) {
+          reminder.sent = true;
+          mutated = true;
+          try {
+            await webpush.sendNotification(
+              entry.subscription,
+              JSON.stringify({
+                title: reminder.title,
+                body: reminder.body,
+                tag: `dayflow-${reminder.key}`,
+                url: "/",
+              }),
+              { TTL: 600, urgency: "high" }
+            );
+          } catch (err) {
+            const statusCode = (err as { statusCode?: number })?.statusCode;
+            if (statusCode === 404 || statusCode === 410) {
+              pushStore.delete(endpoint);
+              break;
+            }
+            console.warn("[WebPush] delivery failed:", statusCode || (err instanceof Error ? err.message : String(err)));
+          }
+        }
+      }
+    }
+
+    if (mutated) {
+      persistPushStore();
+    }
+  }
+
+  setInterval(() => {
+    dispatchDuePushReminders().catch(() => {});
+  }, 10_000);
+
+  app.get("/api/push/vapid-public-key", (_req: Request, res: Response) => {
+    return res.json({ publicKey: vapidKeys.publicKey });
+  });
+
+  app.post("/api/push/sync", (req: Request, res: Response) => {
+    const { subscription, reminders } = req.body as {
+      subscription?: PushSubscription;
+      reminders?: Array<{
+        key?: string;
+        title?: string;
+        body?: string;
+        triggerAtEpoch?: number;
+      }>;
+    };
+
+    if (!subscription || typeof subscription.endpoint !== "string" || !subscription.keys?.p256dh || !subscription.keys?.auth) {
+      return res.status(400).json({ error: "유효한 푸시 구독 정보가 필요합니다." });
+    }
+
+    const existing = pushStore.get(subscription.endpoint);
+    const alreadySentKeys = new Set(
+      (existing?.reminders || []).filter((r) => r.sent).map((r) => r.key)
+    );
+
+    const now = Date.now();
+    const maxFutureMs = 30 * 24 * 60 * 60 * 1000;
+    const sanitized: StoredPushReminder[] = (Array.isArray(reminders) ? reminders : [])
+      .filter(
+        (r): r is { key: string; title: string; body: string; triggerAtEpoch: number } =>
+          typeof r?.key === "string" &&
+          typeof r?.title === "string" &&
+          typeof r?.body === "string" &&
+          typeof r?.triggerAtEpoch === "number" &&
+          Number.isFinite(r.triggerAtEpoch) &&
+          r.triggerAtEpoch >= now - 2 * 60 * 1000 &&
+          r.triggerAtEpoch <= now + maxFutureMs
+      )
+      .slice(0, 100)
+      .map((r) => ({
+        key: r.key,
+        title: r.title.slice(0, 120),
+        body: r.body.slice(0, 240),
+        triggerAtEpoch: r.triggerAtEpoch,
+        sent: alreadySentKeys.has(r.key),
+      }));
+
+    pushStore.set(subscription.endpoint, {
+      subscription,
+      reminders: sanitized,
+      updatedAt: now,
+    });
+    persistPushStore();
+    dispatchDuePushReminders().catch(() => {});
+
+    return res.json({ ok: true, scheduledCount: sanitized.filter((r) => !r.sent).length });
   });
 
   // Never let unmatched /api/* requests fall through to SPA index.html (which would return HTTP 200 HTML)

@@ -12,6 +12,7 @@ import { COLOR_CARD_LIST, colorToHex, formatSubTypeLabel, isPresetColorId } from
 import { exportSchedulesToIcs, downloadTextFile } from "../lib/ics";
 import { generateId } from "../lib/storage";
 import { getTodayStr, timeToMinutes } from "../lib/dateUtils";
+import { ensurePushSubscription, requestWebNotificationPermission } from "../lib/notifications";
 
 interface ScheduleModalProps {
   isOpen: boolean;
@@ -119,17 +120,13 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
 
   const handleNotificationToggle = async (checked: boolean) => {
     setNotifyEnabled(checked);
-    if (checked && typeof window !== "undefined" && "Notification" in window) {
-      if (Notification.permission === "default") {
-        try {
-          await Notification.requestPermission();
-        } catch {
-          // ignore
-        }
-      }
-      if (Notification.permission === "denied" && onNotifyPermissionHint) {
-        onNotifyPermissionHint();
-      }
+    if (!checked) return;
+
+    const perm = await requestWebNotificationPermission();
+    if (perm === "granted") {
+      await ensurePushSubscription();
+    } else if (onNotifyPermissionHint) {
+      onNotifyPermissionHint();
     }
   };
 

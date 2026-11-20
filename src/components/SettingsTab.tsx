@@ -13,7 +13,12 @@ import type { AppSettings, ScheduleItem, ThemeMode } from "../types/dayflow";
 import type { DayFlowStateData } from "../lib/storage";
 import { createBackupJson, parseBackupJson } from "../lib/storage";
 import { downloadTextFile, exportSchedulesToIcs, importSchedulesFromIcs } from "../lib/ics";
-import { fireReminderNotification, requestWebNotificationPermission } from "../lib/notifications";
+import {
+  ensurePushSubscription,
+  fireReminderNotification,
+  requestWebNotificationPermission,
+  syncScheduledPushReminders,
+} from "../lib/notifications";
 import { getTodayStr } from "../lib/dateUtils";
 import { PWAInstallButton } from "./PWAInstallButton";
 
@@ -52,12 +57,14 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
     const perm = await requestWebNotificationPermission();
     if (perm === "granted") {
       onUpdateSettings({ notificationsEnabled: true });
-      fireReminderNotification("데이플로우 알림 활성화", "일정 시작 전 알림을 정상적으로 받을 수 있습니다.");
+      await ensurePushSubscription();
+      await syncScheduledPushReminders(state.schedules);
+      fireReminderNotification("데이플로우 알림 활성화", "일정 시작 전 상단 배너 알림을 받을 수 있습니다.");
       onShowToast("웹 알림이 활성화되었습니다.");
     } else if (perm === "denied") {
       onShowToast("브라우저 설정에서 알림 권한이 차단되어 있습니다.");
     } else {
-      onShowToast("이 브라우저 환경에서는 웹 푸시 알림이 제한될 수 있습니다.");
+      onShowToast("아이폰에서는 Safari 공유 → 홈 화면에 추가한 앱에서 알림을 허용해 주세요.");
     }
   };
 

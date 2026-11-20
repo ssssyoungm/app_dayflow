@@ -8,7 +8,6 @@ import {
   RotateCcw,
   Save,
   Sun,
-  Trash2,
 } from "lucide-react";
 import type {
   ActiveStopwatch,
@@ -16,14 +15,13 @@ import type {
   StudyGoal,
   StudySession,
 } from "../types/dayflow";
-import { resolveColorTheme } from "../lib/colors";
 import {
   formatDurationKo,
   formatStopwatchClock,
   getTodayStr,
-  getWeekDates,
 } from "../lib/dateUtils";
 import { generateId } from "../lib/storage";
+import { StudyAnalyticsPanel } from "./StudyAnalyticsPanel";
 
 interface FocusTimerTabProps {
   stopwatch: ActiveStopwatch;
@@ -133,7 +131,6 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
   }, [stopwatch, tickNow]);
 
   const todayStr = getTodayStr();
-  const weekDatesSet = useMemo(() => new Set(getWeekDates(todayStr)), [todayStr]);
 
   const todayTotalSeconds = useMemo(() => {
     const savedToday = studySessions
@@ -141,30 +138,6 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
       .reduce((acc, s) => acc + (s.actualSeconds || s.actualMinutes * 60), 0);
     return savedToday + elapsedSeconds;
   }, [studySessions, todayStr, elapsedSeconds]);
-
-  const subjectMetrics = useMemo(() => {
-    return studyGoals.map((g) => {
-      const allForSubject = studySessions.filter((s) => s.subjectId === g.id);
-      const todayMins = allForSubject
-        .filter((s) => s.date === todayStr)
-        .reduce((acc, s) => acc + s.actualMinutes, 0);
-      const weekMins = allForSubject
-        .filter((s) => weekDatesSet.has(s.date))
-        .reduce((acc, s) => acc + s.actualMinutes, 0);
-
-      const plannedSum = allForSubject.reduce((acc, s) => acc + Math.max(1, s.plannedMinutes), 0);
-      const actualSum = allForSubject.reduce((acc, s) => acc + s.actualMinutes, 0);
-      const ratio = allForSubject.length > 0 && plannedSum > 0 ? actualSum / plannedSum : 1.0;
-
-      return {
-        goal: g,
-        todayMins,
-        weekMins,
-        ratio,
-        count: allForSubject.length,
-      };
-    });
-  }, [studyGoals, studySessions, todayStr, weekDatesSet]);
 
   const activeSubjectLabel = stopwatch.subjectName || customSubject.trim() || "자율 집중 공부";
   const plannedSeconds = Math.max(60, (stopwatch.plannedMinutes || 50) * 60);
@@ -378,7 +351,7 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
   return (
     <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
       {/* LEFT / MAIN: YPT Stopwatch Card */}
-      <div className="xl:col-span-7 space-y-5">
+      <div className="xl:col-span-5 xl:sticky xl:top-20 space-y-5">
         <section className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-950 text-zinc-50 p-6 space-y-6">
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -586,121 +559,18 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
           </div>
         </section>
 
-        {/* Recent Study Logs */}
-        <section className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/70 p-5 space-y-3">
-          <h3 className="text-sm font-bold text-zinc-900 dark:text-zinc-100">
-            최근 공부 측정 기록 · <span className="font-normal text-zinc-500 tabular-nums">{studySessions.length}건</span>
-          </h3>
-
-          {studySessions.length === 0 ? (
-            <p className="text-xs text-zinc-500 dark:text-zinc-400 py-4 text-center">
-              아직 저장된 스톱워치 기록이 없습니다. 위 타이머로 첫 공부 시간을 측정해 보세요.
-            </p>
-          ) : (
-            <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
-              {studySessions.slice(0, 12).map((s) => {
-                const ratio = (s.actualMinutes / Math.max(1, s.plannedMinutes)).toFixed(2);
-                return (
-                  <div key={s.id} className="py-3 flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-xs font-semibold text-zinc-900 dark:text-zinc-100 truncate">
-                        {s.subjectName}
-                      </p>
-                      <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400 tabular-nums">
-                        {s.date} · 실제 {formatDurationKo(s.actualMinutes)} (계획 {s.plannedMinutes}분 ·{" "}
-                        {ratio}x)
-                        {s.memo ? ` · ${s.memo}` : ""}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => onDeleteSession(s.id)}
-                      className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-zinc-400 hover:text-rose-600"
-                      aria-label="기록 삭제"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </section>
       </div>
 
-      {/* RIGHT: Subject Cumulative Progress & Adaptive Ratio */}
-      <section className="xl:col-span-5 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/70 p-5 space-y-4">
-        <div>
-          <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-50">
-            과목별 누적 &amp; 추천 보정 계수
-          </h3>
-          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400 leading-relaxed">
-            저장된 실제 공부 시간과 계획 시간의 비율(보정 계수)이 다음 AI 빈 시간대 추천 길이에 자동으로 반영됩니다.
-          </p>
-        </div>
-
-        {subjectMetrics.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-zinc-200 dark:border-zinc-800 p-5 text-xs text-zinc-500 dark:text-zinc-400 text-center">
-            AI 시간표 탭에서 개인 공부 목표 과목을 추가하면 과목별 주간 달성률과 보정 계수를 추적할 수 있습니다.
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {subjectMetrics.map(({ goal, todayMins, weekMins, ratio, count }) => {
-              const theme = resolveColorTheme(goal.color);
-              const pct = Math.min(
-                100,
-                Math.round((weekMins / Math.max(1, goal.weeklyTargetMinutes)) * 100)
-              );
-              const nextRecommendedBlock = Math.max(
-                25,
-                Math.min(120, Math.round(goal.defaultSessionMinutes * ratio))
-              );
-
-              return (
-                <div
-                  key={goal.id}
-                  className={`rounded-xl border p-3.5 space-y-2 ${theme.cardClass}`}
-                  style={theme.cardStyle}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span
-                        className={`w-2.5 h-2.5 rounded-full shrink-0 ${theme.dotClass}`}
-                        style={theme.dotStyle}
-                      />
-                      <p className="text-sm font-bold text-zinc-900 dark:text-zinc-100 truncate">
-                        {goal.subjectName}
-                      </p>
-                    </div>
-                    <span className="text-xs font-semibold text-violet-700 dark:text-violet-300 tabular-nums shrink-0">
-                      {pct}%
-                    </span>
-                  </div>
-
-                  <div className="h-1.5 w-full rounded-full bg-zinc-200/80 dark:bg-zinc-800 overflow-hidden">
-                    <div
-                      className="h-full rounded-full transition-all"
-                      style={{ width: `${pct}%`, ...theme.progressStyle }}
-                    />
-                  </div>
-
-                  <div className="flex flex-wrap items-center justify-between gap-1 text-[11px] text-zinc-600 dark:text-zinc-400 tabular-nums">
-                    <span>
-                      오늘 {formatDurationKo(todayMins)} · 이번 주 {formatDurationKo(weekMins)} /{" "}
-                      {formatDurationKo(goal.weeklyTargetMinutes)}
-                    </span>
-                    <span>
-                      {count > 0
-                        ? `소요비율 ${ratio.toFixed(2)}x → 다음 추천 약 ${nextRecommendedBlock}분`
-                        : `기본 세션 ${goal.defaultSessionMinutes}분`}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
+      {/* RIGHT: Daily / Weekly / Monthly Study Analytics & Per-Subject Breakdown */}
+      <div className="xl:col-span-7">
+        <StudyAnalyticsPanel
+          studyGoals={studyGoals}
+          studySessions={studySessions}
+          liveElapsedSeconds={elapsedSeconds}
+          isStopwatchRunning={stopwatch.isRunning}
+          onDeleteSession={onDeleteSession}
+        />
+      </div>
     </div>
   );
 };

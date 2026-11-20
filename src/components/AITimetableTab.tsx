@@ -707,10 +707,10 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
         <div>
           <h2 className="text-base font-bold text-zinc-900 dark:text-zinc-50 flex items-center gap-2">
             <Camera className="w-4 h-4 text-violet-600 dark:text-violet-400" />
-            <span>에브리타임 시간표 · 일정 사진 AI 인식</span>
+            <span>시간표 · 일정 사진 AI 인식</span>
           </h2>
           <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400 leading-relaxed">
-            에브리타임 시간표 캡처나 강의계획서·공지 사진을 올리면 Gemini AI가 요일과 시간을 분석해 타임블록으로 자동 배치합니다.
+            시간표 캡처나 강의계획서·공지 사진을 올리면 AI가 요일과 시간을 분석해 타임블록으로 자동 배치합니다.
           </p>
         </div>
 
@@ -738,7 +738,7 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
               {preparingImage ? "사진을 최적화하는 중..." : "시간표 또는 일정 사진 선택하기"}
             </span>
             <span className="text-xs text-zinc-500 dark:text-zinc-400">
-              아이폰 사진 보관함 · 에브리타임 스크린샷(PNG, JPG) 자동 최적화 지원
+              아이폰 사진 보관함 · 시간표 스크린샷(PNG, JPG) 자동 최적화 지원
             </span>
           </button>
         ) : (

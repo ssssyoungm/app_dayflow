@@ -24,7 +24,13 @@ import {
   saveDayFlowState,
 } from "./lib/storage";
 import { getTodayStr } from "./lib/dateUtils";
-import { findDueReminders, fireReminderNotification } from "./lib/notifications";
+import {
+  findDueReminders,
+  fireReminderNotification,
+  formatReminderBody,
+  getReminderKey,
+  syncScheduledPushReminders,
+} from "./lib/notifications";
 import { useTheme } from "./hooks/useTheme";
 import { PlannerView } from "./components/PlannerView";
 import { ScheduleModal } from "./components/ScheduleModal";
@@ -131,24 +137,33 @@ export default function App() {
   // Auto 06:00~18:00 Light / 18:00~06:00 Dark theme hook
   const { isDark, isAutoDaytime } = useTheme(state.settings.themeMode);
 
-  // Check scheduled reminders every 20 seconds
+  // Check scheduled reminders (foreground fallback) & sync to Web Push backend (background banner delivery)
   useEffect(() => {
     if (!hydrated) return;
     const checkReminders = () => {
       const due = findDueReminders(state.schedules, notifiedKeysRef.current);
       for (const item of due) {
-        const key = `${item.id}_${item.date}_${item.startTime}_${item.notifyMinutesBefore}`;
+        const key = getReminderKey(item);
         notifiedKeysRef.current.add(key);
-        const desc = item.isAllDay
-          ? "오늘 종일 일정 알림"
-          : `${item.startTime} 시작 (${item.notifyMinutesBefore === 0 ? "정시" : `${item.notifyMinutesBefore}분 전`})`;
-        fireReminderNotification(`데이플로우 · ${item.title}`, desc);
+        const desc = formatReminderBody(item);
+        fireReminderNotification(`데이플로우 · ${item.title}`, desc, `dayflow-${key}`);
         showToast(`알림: ${item.title} (${desc})`);
       }
     };
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        checkReminders();
+        syncScheduledPushReminders(state.schedules).catch(() => {});
+      }
+    };
     checkReminders();
-    const timer = window.setInterval(checkReminders, 20_000);
-    return () => window.clearInterval(timer);
+    syncScheduledPushReminders(state.schedules).catch(() => {});
+    const timer = window.setInterval(checkReminders, 10_000);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
   }, [hydrated, state.schedules, showToast]);
 
   const handleOpenNewSchedule = (defaultDate = selectedDate) => {
