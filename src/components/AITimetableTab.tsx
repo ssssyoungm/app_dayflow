@@ -330,6 +330,7 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
   const [defaultSessionMins, setDefaultSessionMins] = useState("50");
   const [goalPriority, setGoalPriority] = useState<PriorityLevel>("high");
   const [goalColor, setGoalColor] = useState<ColorCardId>("violet");
+  const [goalIncludeInTotal, setGoalIncludeInTotal] = useState<boolean>(true);
 
   // ---- 3. Adaptive AI Study Recommendation State ----
   const [recommendScope, setRecommendScope] = useState<"day" | "week">("day");
@@ -548,9 +549,11 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
       defaultSessionMinutes: sessionMins,
       color: goalColor,
       priority: goalPriority,
+      includeInTotal: goalIncludeInTotal,
       createdAt: new Date().toISOString(),
     });
     setSubjectName("");
+    setGoalIncludeInTotal(true);
     setRecommendError("");
     onShowToast(`"${name}" 공부 목표가 추가되었습니다.`);
   };
@@ -1041,6 +1044,21 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
                 </label>
               </div>
             </div>
+
+            <label className="flex items-start gap-2 pt-0.5 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={goalIncludeInTotal}
+                onChange={(e) => setGoalIncludeInTotal(e.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded border-zinc-300 dark:border-zinc-700 accent-violet-600 cursor-pointer shrink-0"
+              />
+              <span className="text-xs text-zinc-700 dark:text-zinc-300 leading-snug">
+                총 공부 시간에 포함
+                <span className="block text-[11px] text-zinc-500 dark:text-zinc-400">
+                  체크 해제 시 취미·기타 일정처럼 과목별·측정 기록에만 남고 총 공부 시간에서는 제외됩니다.
+                </span>
+              </span>
+            </label>
           </form>
 
           {/* Existing Goals List with Per-Goal Free Color Customizer */}
@@ -1078,6 +1096,7 @@ export const AITimetableTab: React.FC<AITimetableTabProps> = ({
                             {sessionCount > 0
                               ? `실제 소요 ${actualToPlannedRatio.toFixed(2)}x (${sessionCount}회)`
                               : `기본 ${goal.defaultSessionMinutes}분`}
+                            {goal.includeInTotal === false ? " · 총 공부 시간 제외" : ""}
                           </p>
                         </div>
 

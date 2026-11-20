@@ -1,5 +1,5 @@
 import type { ScheduleItem } from "../types/dayflow";
-import { parseLocalDate, timeToMinutes } from "./dateUtils";
+import { kstDateTimeToEpoch } from "./dateUtils";
 
 export function isWebNotificationSupported(): boolean {
   return typeof window !== "undefined" && "Notification" in window;
@@ -30,16 +30,12 @@ export function getReminderKey(item: ScheduleItem): string {
 
 export function computeReminderTriggerEpoch(item: ScheduleItem): number | null {
   if (!item.notifyEnabled || item.completed || !item.date) return null;
-  const baseDate = parseLocalDate(item.date);
-  if (Number.isNaN(baseDate.getTime())) return null;
-
-  const targetMinutes = item.isAllDay ? 9 * 60 : timeToMinutes(item.startTime);
-  const hours = Math.floor(targetMinutes / 60);
-  const mins = targetMinutes % 60;
-  baseDate.setHours(hours, mins, 0, 0);
+  const targetTime = item.isAllDay ? "09:00" : item.startTime || "09:00";
+  const baseEpoch = kstDateTimeToEpoch(item.date, targetTime);
+  if (baseEpoch === null) return null;
 
   const offsetMs = Math.max(0, Number(item.notifyMinutesBefore) || 0) * 60_000;
-  return baseDate.getTime() - offsetMs;
+  return baseEpoch - offsetMs;
 }
 
 export function formatReminderBody(item: ScheduleItem): string {

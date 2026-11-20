@@ -1,5 +1,6 @@
 import type { ScheduleItem } from "../types/dayflow";
 import { CATEGORY_LABELS, PRIORITY_LABELS, formatSubTypeLabel } from "./colors";
+import { KST_TIME_ZONE, addDays, getKstDateParts } from "./dateUtils";
 import { generateId } from "./storage";
 
 function escapeIcsText(value: string): string {
@@ -45,6 +46,7 @@ export function exportSchedulesToIcs(items: ScheduleItem[], calendarName = "Îç∞Ï
     "VERSION:2.0",
     "PRODID:-//DayFlow//Mobile Study Planner//KO",
     `X-WR-CALNAME:${escapeIcsText(calendarName)}`,
+    `X-WR-TIMEZONE:${KST_TIME_ZONE}`,
     "CALSCALE:GREGORIAN",
   ];
 
@@ -55,13 +57,9 @@ export function exportSchedulesToIcs(items: ScheduleItem[], calendarName = "Îç∞Ï
 
     if (item.isAllDay) {
       const start = formatIcsDateOnly(item.date);
-      const nextDay = new Date(`${item.date}T00:00:00`);
-      nextDay.setDate(nextDay.getDate() + 1);
-      const y = nextDay.getFullYear();
-      const m = String(nextDay.getMonth() + 1).padStart(2, "0");
-      const d = String(nextDay.getDate()).padStart(2, "0");
+      const end = formatIcsDateOnly(addDays(item.date, 1));
       lines.push(`DTSTART;VALUE=DATE:${start}`);
-      lines.push(`DTEND;VALUE=DATE:${y}${m}${d}`);
+      lines.push(`DTEND;VALUE=DATE:${end}`);
     } else {
       lines.push(`DTSTART:${formatIcsDateTimeLocal(item.date, item.startTime)}`);
       lines.push(`DTEND:${formatIcsDateTimeLocal(item.date, item.endTime)}`);
@@ -121,11 +119,12 @@ function parseIcsDateValue(raw: string): { date: string; time: string; isAllDay:
           Number(dtMatch[5])
         )
       );
-      const y = utc.getFullYear();
-      const m = String(utc.getMonth() + 1).padStart(2, "0");
-      const d = String(utc.getDate()).padStart(2, "0");
-      const hh = String(utc.getHours()).padStart(2, "0");
-      const mm = String(utc.getMinutes()).padStart(2, "0");
+      const kst = getKstDateParts(utc);
+      const y = kst.year;
+      const m = String(kst.month).padStart(2, "0");
+      const d = String(kst.day).padStart(2, "0");
+      const hh = String(kst.hour).padStart(2, "0");
+      const mm = String(kst.minute).padStart(2, "0");
       return { date: `${y}-${m}-${d}`, time: `${hh}:${mm}`, isAllDay: false };
     }
     return {

@@ -46,6 +46,7 @@ export interface StudyGoal {
   defaultSessionMinutes: number;
   color: ColorCardId;
   priority: PriorityLevel;
+  includeInTotal?: boolean;
   createdAt: string;
 }
 
@@ -60,6 +61,7 @@ export interface StudySession {
   plannedMinutes: number;
   actualMinutes: number;
   actualSeconds: number;
+  includeInTotal?: boolean;
   memo?: string;
 }
 
@@ -69,6 +71,7 @@ export interface ActiveStopwatch {
   subjectName: string;
   scheduleId?: string;
   plannedMinutes: number;
+  includeInTotal?: boolean;
   startedAtEpoch: number | null; // Date.now() when started/resumed
   accumulatedSeconds: number;
 }

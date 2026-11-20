@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Trash2, X } from "lucide-react";
 import type { StudyGoal, StudySession } from "../types/dayflow";
 import { colorToHex } from "../lib/colors";
@@ -7,13 +7,16 @@ import {
   addDays,
   formatDurationKo,
   formatKoreanDateFull,
+  formatKstClock,
   formatStopwatchClock,
   formatYearMonthKo,
+  getKstHour,
   getMonthGridDates,
   getTodayStr,
   getWeekDates,
+  getWeekdayIndex,
   parseLocalDate,
-  toLocalDateStr,
+  shiftMonthDate,
 } from "../lib/dateUtils";
 
 type PeriodMode = "daily" | "weekly" | "monthly";
@@ -23,7 +26,12 @@ interface StudyAnalyticsPanelProps {
   studySessions: StudySession[];
   liveElapsedSeconds: number;
   isStopwatchRunning: boolean;
+  isLiveIncludedInTotal: boolean;
   onDeleteSession: (id: string) => void;
+}
+
+function isSessionIncludedInTotal(session: StudySession): boolean {
+  return session.includeInTotal !== false;
 }
 
 const FALLBACK_SUBJECT_HEX = [
@@ -72,15 +80,7 @@ function formatCompactDuration(totalSeconds: number): string {
 }
 
 function formatIsoClock(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-}
-
-function shiftMonth(dateStr: string, deltaMonths: number): string {
-  const d = parseLocalDate(dateStr);
-  const next = new Date(d.getFullYear(), d.getMonth() + deltaMonths, 1);
-  return toLocalDateStr(next);
+  return formatKstClock(iso);
 }
 
 interface SubjectSummary {
@@ -88,6 +88,7 @@ interface SubjectSummary {
   name: string;
   colorHex: string;
   totalSeconds: number;
+  includedSeconds: number;
   sessionCount: number;
   sharePct: number;
   goal?: StudyGoal;
@@ -101,13 +102,35 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
   studySessions,
   liveElapsedSeconds,
   isStopwatchRunning,
+  isLiveIncludedInTotal,
   onDeleteSession,
 }) => {
-  const todayStr = getTodayStr();
+  const [todayStr, setTodayStr] = useState<string>(() => getTodayStr());
   const [periodMode, setPeriodMode] = useState<PeriodMode>("daily");
-  const [anchorDate, setAnchorDate] = useState<string>(todayStr);
+  const [anchorDate, setAnchorDate] = useState<string>(() => getTodayStr());
   const [selectedSubjectKey, setSelectedSubjectKey] = useState<string | null>(null);
   const [selectedDayInWeek, setSelectedDayInWeek] = useState<string | null>(null);
+
+  useEffect(() => {
+    const syncKstToday = () => {
+      const nextToday = getTodayStr();
+      setTodayStr((prevToday) => {
+        if (prevToday !== nextToday) {
+          setAnchorDate((prevAnchor) => (prevAnchor === prevToday ? nextToday : prevAnchor));
+        }
+        return nextToday;
+      });
+    };
+    const id = window.setInterval(syncKstToday, 30_000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") syncKstToday();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, []);
 
   const goalsById = useMemo(() => {
     const map = new Map<string, StudyGoal>();
@@ -184,10 +207,10 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
     return formatYearMonthKo(anchorYear, anchorMonth0);
   }, [periodMode, anchorDate, weekDates, anchorYear, anchorMonth0]);
 
-  const jumpTodayLabel =
+  const presentPeriodLabel =
     periodMode === "daily" ? "오늘" : periodMode === "weekly" ? "이번 주" : "이번 달";
 
-  // Sessions inside the active period
+  // Sessions inside the active period (all records)
   const periodSessions = useMemo(() => {
     return studySessions.filter((s) => {
       if (periodMode === "daily") return s.date === anchorDate;
@@ -195,6 +218,12 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
       return s.date.startsWith(anchorMonthPrefix);
     });
   }, [studySessions, periodMode, anchorDate, weekDatesSet, anchorMonthPrefix]);
+
+  // Sessions counted toward "총 공부 시간"
+  const includedPeriodSessions = useMemo(
+    () => periodSessions.filter(isSessionIncludedInTotal),
+    [periodSessions]
+  );
 
   // Sessions scoped to selectedDayInWeek (only applies when user taps a bar in Weekly view)
   const scopedSessions = useMemo(() => {
@@ -205,17 +234,25 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
   }, [periodMode, selectedDayInWeek, periodSessions]);
 
   const totalPeriodSeconds = useMemo(
-    () => periodSessions.reduce((acc, s) => acc + getSessionSeconds(s), 0),
+    () => includedPeriodSessions.reduce((acc, s) => acc + getSessionSeconds(s), 0),
+    [includedPeriodSessions]
+  );
+
+  const excludedPeriodSeconds = useMemo(
+    () =>
+      periodSessions
+        .filter((s) => !isSessionIncludedInTotal(s))
+        .reduce((acc, s) => acc + getSessionSeconds(s), 0),
     [periodSessions]
   );
 
   const activeStudyDaysCount = useMemo(() => {
     const days = new Set<string>();
-    for (const s of periodSessions) {
+    for (const s of includedPeriodSessions) {
       if (getSessionSeconds(s) > 0) days.add(s.date);
     }
     return days.size;
-  }, [periodSessions]);
+  }, [includedPeriodSessions]);
 
   const dailyAverageSeconds = useMemo(() => {
     if (activeStudyDaysCount === 0) return 0;
@@ -262,6 +299,7 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
         name: string;
         colorHex: string;
         totalSeconds: number;
+        includedSeconds: number;
         sessionCount: number;
         goal?: StudyGoal;
       }
@@ -270,9 +308,11 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
     for (const session of scopedSessions) {
       const meta = resolveSubjectMeta(session);
       const secs = getSessionSeconds(session);
+      const incSecs = isSessionIncludedInTotal(session) ? secs : 0;
       const existing = accMap.get(meta.key);
       if (existing) {
         existing.totalSeconds += secs;
+        existing.includedSeconds += incSecs;
         existing.sessionCount += 1;
       } else {
         accMap.set(meta.key, {
@@ -280,6 +320,7 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
           name: meta.name,
           colorHex: meta.colorHex,
           totalSeconds: secs,
+          includedSeconds: incSecs,
           sessionCount: 1,
           goal: meta.goal,
         });
@@ -295,13 +336,16 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
           name: goal.subjectName,
           colorHex: colorToHex(goal.color),
           totalSeconds: 0,
+          includedSeconds: 0,
           sessionCount: 0,
           goal,
         });
       }
     }
 
-    const scopeTotal = scopedSessions.reduce((acc, s) => acc + getSessionSeconds(s), 0);
+    const includedScopeTotal = scopedSessions
+      .filter(isSessionIncludedInTotal)
+      .reduce((acc, s) => acc + getSessionSeconds(s), 0);
 
     return Array.from(accMap.values())
       .map((item) => {
@@ -309,7 +353,9 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
         return {
           ...item,
           sharePct:
-            scopeTotal > 0 ? Math.round((item.totalSeconds / scopeTotal) * 100) : 0,
+            includedScopeTotal > 0 && item.includedSeconds > 0
+              ? Math.round((item.includedSeconds / includedScopeTotal) * 100)
+              : 0,
           allTimeRatio: gStats?.ratio ?? 1.0,
           allTimeCount: gStats?.count ?? item.sessionCount,
           weekMinutes: gStats?.weekMinutes ?? 0,
@@ -326,12 +372,17 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
     [subjectSummaries]
   );
 
+  const includedSubjects = useMemo(
+    () => subjectSummaries.filter((s) => s.includedSeconds > 0),
+    [subjectSummaries]
+  );
+
   const maxSubjectSeconds = useMemo(
     () => Math.max(1, ...subjectSummaries.map((s) => s.totalSeconds)),
     [subjectSummaries]
   );
 
-  // Daily time-of-day distribution (4 blocks: 새벽/오전/오후/저녁)
+  // Daily time-of-day distribution (4 blocks: 새벽/오전/오후/저녁) — 총 공부 시간 포함 기록 기준
   const dailyTimeBlocks = useMemo(() => {
     if (periodMode !== "daily") return [];
     const buckets = [
@@ -340,9 +391,9 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
       { id: "afternoon", label: "오후", range: "12-18시", seconds: 0 },
       { id: "evening", label: "저녁", range: "18-24시", seconds: 0 },
     ];
-    for (const s of periodSessions) {
+    for (const s of includedPeriodSessions) {
       const start = new Date(s.startedAt);
-      const hour = Number.isNaN(start.getTime()) ? 12 : start.getHours();
+      const hour = Number.isNaN(start.getTime()) ? 12 : getKstHour(start);
       const idx = hour < 6 ? 0 : hour < 12 ? 1 : hour < 18 ? 2 : 3;
       buckets[idx].seconds += getSessionSeconds(s);
     }
@@ -351,13 +402,13 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
       ...b,
       heightPct: b.seconds > 0 ? Math.max(14, Math.round((b.seconds / maxSecs) * 100)) : 0,
     }));
-  }, [periodMode, periodSessions]);
+  }, [periodMode, includedPeriodSessions]);
 
-  // Weekly 7-day stacked bars by subject color
+  // Weekly 7-day stacked bars by subject color — 총 공부 시간 포함 기록 기준
   const weeklyChartDays = useMemo(() => {
     if (periodMode !== "weekly") return [];
     const perDay = weekDates.map((dateStr) => {
-      const daySessions = periodSessions.filter((s) => s.date === dateStr);
+      const daySessions = includedPeriodSessions.filter((s) => s.date === dateStr);
       const bySubj = new Map<string, { key: string; colorHex: string; seconds: number }>();
       let totalSeconds = 0;
       for (const s of daySessions) {
@@ -375,7 +426,7 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
       return {
         dateStr,
         dayNum: d.getDate(),
-        weekdayLabel: WEEKDAY_KO[d.getDay()],
+        weekdayLabel: WEEKDAY_KO[getWeekdayIndex(dateStr)],
         isToday: dateStr === todayStr,
         totalSeconds,
         segments: Array.from(bySubj.values()).sort((a, b) => b.seconds - a.seconds),
@@ -388,13 +439,13 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
       heightPct:
         d.totalSeconds > 0 ? Math.max(10, Math.round((d.totalSeconds / maxDaySeconds) * 100)) : 0,
     }));
-  }, [periodMode, weekDates, periodSessions, resolveSubjectMeta, todayStr]);
+  }, [periodMode, weekDates, includedPeriodSessions, resolveSubjectMeta, todayStr]);
 
-  // Monthly calendar map: dateStr -> { totalSeconds, topColorHex }
+  // Monthly calendar map — 총 공부 시간 포함 기록 기준
   const monthlyDayMap = useMemo(() => {
     if (periodMode !== "monthly") return new Map<string, { totalSeconds: number; colors: string[] }>();
     const map = new Map<string, { totalSeconds: number; colorTotals: Map<string, number> }>();
-    for (const s of periodSessions) {
+    for (const s of includedPeriodSessions) {
       const meta = resolveSubjectMeta(s);
       const secs = getSessionSeconds(s);
       let entry = map.get(s.date);
@@ -417,7 +468,7 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
       result.set(dateStr, { totalSeconds: val.totalSeconds, colors });
     }
     return result;
-  }, [periodMode, periodSessions, resolveSubjectMeta]);
+  }, [periodMode, includedPeriodSessions, resolveSubjectMeta]);
 
   const monthlyMaxSeconds = useMemo(() => {
     let max = 0;
@@ -444,6 +495,9 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
   }, [selectedSubjectKey, subjectSummaries]);
 
   const handleModeChange = (nextMode: PeriodMode) => {
+    const freshToday = getTodayStr();
+    setTodayStr(freshToday);
+    setAnchorDate(freshToday);
     setPeriodMode(nextMode);
     setSelectedDayInWeek(null);
     setSelectedSubjectKey(null);
@@ -457,14 +511,8 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
     } else if (periodMode === "weekly") {
       setAnchorDate((prev) => addDays(prev, delta * 7));
     } else {
-      setAnchorDate((prev) => shiftMonth(prev, delta));
+      setAnchorDate((prev) => shiftMonthDate(prev, delta));
     }
-  };
-
-  const handleJumpToday = () => {
-    setAnchorDate(todayStr);
-    setSelectedDayInWeek(null);
-    setSelectedSubjectKey(null);
   };
 
   const handleSelectMonthDate = (dateStr: string) => {
@@ -555,14 +603,10 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
             <span className="text-sm font-bold text-zinc-900 dark:text-zinc-100 tabular-nums truncate">
               {periodLabel}
             </span>
-            {!isViewingPresentPeriod && (
-              <button
-                type="button"
-                onClick={handleJumpToday}
-                className="min-h-[32px] px-2.5 rounded-lg bg-violet-50 dark:bg-violet-950/60 text-violet-700 dark:text-violet-300 text-[11px] font-semibold hover:bg-violet-100 dark:hover:bg-violet-900/60 transition-colors whitespace-nowrap shrink-0"
-              >
-                {jumpTodayLabel}
-              </button>
+            {isViewingPresentPeriod && (
+              <span className="text-xs font-semibold text-violet-600 dark:text-violet-400 whitespace-nowrap shrink-0">
+                · {presentPeriodLabel}
+              </span>
             )}
           </div>
 
@@ -581,10 +625,16 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
           <div>
             <p className="text-xs text-zinc-500 dark:text-zinc-400">
               {periodMode === "daily"
-                ? "선택한 날 총 공부 시간"
+                ? isViewingPresentPeriod
+                  ? "오늘 총 공부 시간"
+                  : "선택한 날 총 공부 시간"
                 : periodMode === "weekly"
-                  ? "이번 주 총 공부 시간"
-                  : "선택한 달 총 공부 시간"}
+                  ? isViewingPresentPeriod
+                    ? "이번 주 총 공부 시간"
+                    : "선택한 주 총 공부 시간"
+                  : isViewingPresentPeriod
+                    ? "이번 달 총 공부 시간"
+                    : "선택한 달 총 공부 시간"}
             </p>
             <div className="mt-1 flex items-baseline gap-2.5">
               <p className="text-3xl font-bold tracking-tight text-zinc-950 dark:text-zinc-50 tabular-nums">
@@ -608,7 +658,13 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
                 <span>일평균 {formatStudySecondsKo(dailyAverageSeconds)}</span>
               </>
             )}
-            {isViewingPresentPeriod && liveElapsedSeconds > 0 && (
+            {excludedPeriodSeconds > 0 && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span>총합 제외 {formatStudySecondsKo(excludedPeriodSeconds)}</span>
+              </>
+            )}
+            {isViewingPresentPeriod && liveElapsedSeconds > 0 && isLiveIncludedInTotal && (
               <>
                 <span aria-hidden="true">·</span>
                 <span className="font-medium text-violet-600 dark:text-violet-400">
@@ -854,11 +910,11 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
             )}
           </div>
 
-          {/* Stacked Proportion Bar */}
-          {studiedSubjects.length > 0 && (
+          {/* Stacked Proportion Bar (총 공부 시간 포함 과목 기준) */}
+          {includedSubjects.length > 0 && (
             <div className="space-y-1.5">
               <div className="h-3 w-full rounded-full bg-zinc-100 dark:bg-zinc-800 overflow-hidden flex gap-0.5">
-                {studiedSubjects.map((subj) => (
+                {includedSubjects.map((subj) => (
                   <button
                     key={subj.key}
                     type="button"
@@ -867,7 +923,7 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
                         prev === subj.key ? null : subj.key
                       )
                     }
-                    title={`${subj.name}: ${formatStudySecondsKo(subj.totalSeconds)} (${subj.sharePct}%)`}
+                    title={`${subj.name}: ${formatStudySecondsKo(subj.includedSeconds)} (${subj.sharePct}%)`}
                     className={`h-full transition-opacity ${
                       selectedSubjectKey && selectedSubjectKey !== subj.key
                         ? "opacity-30"
@@ -882,7 +938,7 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
                 ))}
               </div>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-500 dark:text-zinc-400 tabular-nums">
-                {studiedSubjects.slice(0, 5).map((subj) => (
+                {includedSubjects.slice(0, 5).map((subj) => (
                   <span key={subj.key} className="inline-flex items-center gap-1.5">
                     <span
                       className="w-2 h-2 rounded-full shrink-0"
@@ -907,6 +963,11 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
             <div className="divide-y divide-zinc-100 dark:divide-zinc-800/80">
               {subjectSummaries.map((subj) => {
                 const isSelected = selectedSubjectKey === subj.key;
+                const isFullyExcluded =
+                  (subj.totalSeconds > 0 && subj.includedSeconds === 0) ||
+                  (subj.totalSeconds === 0 && subj.goal?.includeInTotal === false);
+                const isPartiallyExcluded =
+                  subj.includedSeconds > 0 && subj.includedSeconds < subj.totalSeconds;
                 const barWidthPct =
                   subj.totalSeconds > 0
                     ? Math.max(6, Math.round((subj.totalSeconds / maxSubjectSeconds) * 100))
@@ -969,10 +1030,16 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
                         <span className="text-sm font-bold text-zinc-950 dark:text-zinc-50">
                           {formatStudySecondsKo(subj.totalSeconds)}
                         </span>
-                        {subj.totalSeconds > 0 && (
-                          <span className="text-xs font-semibold text-zinc-400 dark:text-zinc-500 w-9 text-right">
-                            {subj.sharePct}%
+                        {isFullyExcluded ? (
+                          <span className="text-[11px] font-medium text-zinc-400 dark:text-zinc-500 whitespace-nowrap">
+                            총합 제외
                           </span>
+                        ) : (
+                          subj.totalSeconds > 0 && (
+                            <span className="text-xs font-semibold text-zinc-400 dark:text-zinc-500 w-9 text-right">
+                              {subj.sharePct}%
+                            </span>
+                          )
                         )}
                       </div>
                     </div>
@@ -985,6 +1052,7 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
                           style={{
                             width: `${barWidthPct}%`,
                             backgroundColor: subj.colorHex,
+                            opacity: isFullyExcluded ? 0.55 : 1,
                           }}
                         />
                       )}
@@ -996,6 +1064,9 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
                         {subj.sessionCount > 0
                           ? `${subj.sessionCount}회 측정 · 회당 평균 ${formatDurationKo(avgMinutes)}`
                           : "이 기간 측정 기록 없음"}
+                        {isPartiallyExcluded
+                          ? ` · 총합 반영 ${formatStudySecondsKo(subj.includedSeconds)}`
+                          : ""}
                       </span>
                       {subj.goal && (
                         <span>
@@ -1079,7 +1150,8 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
                       <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400 tabular-nums">
                         {periodMode !== "daily" ? `${s.date} · ` : ""}
                         {timeRange ? `${timeRange} · ` : ""}
-                        계획 {s.plannedMinutes}분 ({ratio}x)
+                        계획 {formatDurationKo(s.plannedMinutes)} ({ratio}x)
+                        {!isSessionIncludedInTotal(s) ? " · 총합 제외" : ""}
                         {s.memo ? ` · ${s.memo}` : ""}
                       </p>
                     </div>

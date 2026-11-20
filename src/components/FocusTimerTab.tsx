@@ -54,9 +54,21 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
   const [customSubject, setCustomSubject] = useState<string>("");
   const [sessionMemo, setSessionMemo] = useState<string>("");
   const [keepScreenAwake, setKeepScreenAwake] = useState<boolean>(false);
+  const [goalHoursInput, setGoalHoursInput] = useState<string>(() =>
+    String(Math.floor(Math.max(1, stopwatch.plannedMinutes || 50) / 60))
+  );
+  const [goalMinutesInput, setGoalMinutesInput] = useState<string>(() =>
+    String(Math.max(1, stopwatch.plannedMinutes || 50) % 60)
+  );
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   const supportsWakeLock =
     typeof navigator !== "undefined" && "wakeLock" in navigator;
+
+  useEffect(() => {
+    const safeMins = Math.max(1, Math.round(stopwatch.plannedMinutes || 50));
+    setGoalHoursInput(String(Math.floor(safeMins / 60)));
+    setGoalMinutesInput(String(safeMins % 60));
+  }, [stopwatch.plannedMinutes]);
 
   // Immediate clock tick & instant resync when waking phone screen
   useEffect(() => {
@@ -131,13 +143,14 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
   }, [stopwatch, tickNow]);
 
   const todayStr = getTodayStr();
+  const includeInTotal = stopwatch.includeInTotal !== false;
 
   const todayTotalSeconds = useMemo(() => {
     const savedToday = studySessions
-      .filter((s) => s.date === todayStr)
+      .filter((s) => s.date === todayStr && s.includeInTotal !== false)
       .reduce((acc, s) => acc + (s.actualSeconds || s.actualMinutes * 60), 0);
-    return savedToday + elapsedSeconds;
-  }, [studySessions, todayStr, elapsedSeconds]);
+    return savedToday + (includeInTotal ? elapsedSeconds : 0);
+  }, [studySessions, todayStr, elapsedSeconds, includeInTotal]);
 
   const activeSubjectLabel = stopwatch.subjectName || customSubject.trim() || "자율 집중 공부";
   const plannedSeconds = Math.max(60, (stopwatch.plannedMinutes || 50) * 60);
@@ -158,7 +171,8 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
     subjectId: string,
     subjectName: string,
     plannedMinutes: number,
-    scheduleId?: string
+    scheduleId?: string,
+    nextIncludeInTotal = true
   ) => {
     if (stopwatch.isRunning) {
       onShowToast("스톱워치를 먼저 일시정지하거나 저장한 뒤 과목을 변경하세요.");
@@ -170,6 +184,7 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
       subjectName,
       scheduleId,
       plannedMinutes,
+      includeInTotal: nextIncludeInTotal,
     });
   };
 
@@ -228,6 +243,7 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
       plannedMinutes: stopwatch.plannedMinutes || 50,
       actualMinutes,
       actualSeconds: totalSecs,
+      includeInTotal,
       memo: sessionMemo.trim() || undefined,
     };
 
@@ -239,11 +255,16 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
       subjectName: stopwatch.subjectName,
       scheduleId: undefined,
       plannedMinutes: stopwatch.plannedMinutes,
+      includeInTotal,
       startedAtEpoch: null,
       accumulatedSeconds: 0,
     });
     onSetFocusFullscreen(false);
-    onShowToast(`${activeSubjectLabel} ${formatDurationKo(actualMinutes)} 기록이 저장되었습니다.`);
+    onShowToast(
+      includeInTotal
+        ? `${activeSubjectLabel} ${formatDurationKo(actualMinutes)} 기록이 저장되었습니다.`
+        : `${activeSubjectLabel} ${formatDurationKo(actualMinutes)} 기록이 저장되었습니다 (총 공부 시간 제외).`
+    );
   };
 
   // Fullscreen YPT-style desk focus overlay
@@ -311,7 +332,7 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
               />
             </div>
             <p className="text-xs text-zinc-400 tabular-nums">
-              목표 세션 {stopwatch.plannedMinutes}분 대비 {progressPct}%
+              목표 세션 {formatDurationKo(stopwatch.plannedMinutes || 50)} 대비 {progressPct}%
             </p>
           </div>
         </div>
@@ -403,6 +424,7 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
                 .filter((s) => !s.completed)
                 .map((item) => {
                   const selected = stopwatch.scheduleId === item.id;
+                  const linkedGoal = studyGoals.find((g) => g.id === item.subjectId);
                   return (
                     <button
                       key={item.id}
@@ -412,7 +434,8 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
                           item.subjectId || item.id,
                           item.title,
                           item.plannedMinutes || 50,
-                          item.id
+                          item.id,
+                          linkedGoal ? linkedGoal.includeInTotal !== false : true
                         )
                       }
                       className={`min-h-[38px] px-3 rounded-xl border text-xs font-medium transition-colors ${
@@ -437,7 +460,8 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
                         goal.id,
                         goal.subjectName,
                         goal.defaultSessionMinutes,
-                        undefined
+                        undefined,
+                        goal.includeInTotal !== false
                       )
                     }
                     className={`min-h-[38px] px-3 rounded-xl border text-xs font-medium transition-colors ${
@@ -452,41 +476,119 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
               })}
             </div>
 
-            <div className="flex items-center gap-2 pt-1">
+            <div className="space-y-2 pt-1">
               <input
                 type="text"
                 value={customSubject}
                 onChange={(e) => {
-                  setCustomSubject(e.target.value);
-                  if (!stopwatch.isRunning && !stopwatch.subjectId) {
+                  const val = e.target.value;
+                  setCustomSubject(val);
+                  if (!stopwatch.isRunning) {
                     onUpdateStopwatch({
                       ...stopwatch,
-                      subjectName: e.target.value,
+                      subjectId: "",
+                      scheduleId: undefined,
+                      subjectName: val,
                     });
                   }
                 }}
-                placeholder="직접 과목명 입력 (예: 미적분학 복습)"
-                className="flex-1 min-h-[40px] rounded-xl border border-zinc-800 bg-zinc-900 px-3 text-xs text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                placeholder="직접 과목명 입력 (예: 미적분학 복습, 영상 편집)"
+                className="w-full min-h-[40px] rounded-xl border border-zinc-800 bg-zinc-900 px-3 text-xs text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500"
               />
-              <select
-                value={stopwatch.plannedMinutes}
+
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-zinc-400 whitespace-nowrap shrink-0">
+                  목표 시간
+                </span>
+                <div className="flex items-center gap-1.5 flex-1 min-w-[200px]">
+                  <div className="flex items-center gap-1.5 flex-1 rounded-xl border border-zinc-800 bg-zinc-900 px-3 min-h-[40px] focus-within:ring-2 focus-within:ring-violet-500">
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min={0}
+                      max={23}
+                      value={goalHoursInput}
+                      onChange={(e) => {
+                        const raw = e.target.value.replace(/[^0-9]/g, "").slice(0, 2);
+                        setGoalHoursInput(raw);
+                        if (raw === "") return;
+                        const hrs = Math.min(23, Math.max(0, Number(raw)));
+                        const mins = Math.min(59, Math.max(0, Number(goalMinutesInput || 0)));
+                        const total = hrs * 60 + mins;
+                        if (total >= 1) {
+                          onUpdateStopwatch({ ...stopwatch, plannedMinutes: total });
+                        }
+                      }}
+                      onBlur={() => {
+                        const hrs = Math.min(23, Math.max(0, Number(goalHoursInput || 0)));
+                        let mins = Math.min(59, Math.max(0, Number(goalMinutesInput || 0)));
+                        if (hrs === 0 && mins === 0) mins = 1;
+                        setGoalHoursInput(String(hrs));
+                        setGoalMinutesInput(String(mins));
+                        onUpdateStopwatch({ ...stopwatch, plannedMinutes: hrs * 60 + mins });
+                      }}
+                      aria-label="목표 시간 (시간)"
+                      className="w-full bg-transparent text-right text-xs font-semibold text-zinc-100 tabular-nums focus:outline-none"
+                    />
+                    <span className="text-xs text-zinc-400 whitespace-nowrap shrink-0">시간</span>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 flex-1 rounded-xl border border-zinc-800 bg-zinc-900 px-3 min-h-[40px] focus-within:ring-2 focus-within:ring-violet-500">
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min={0}
+                      max={59}
+                      value={goalMinutesInput}
+                      onChange={(e) => {
+                        const raw = e.target.value.replace(/[^0-9]/g, "").slice(0, 2);
+                        setGoalMinutesInput(raw);
+                        if (raw === "") return;
+                        const hrs = Math.min(23, Math.max(0, Number(goalHoursInput || 0)));
+                        const mins = Math.min(59, Math.max(0, Number(raw)));
+                        const total = hrs * 60 + mins;
+                        if (total >= 1) {
+                          onUpdateStopwatch({ ...stopwatch, plannedMinutes: total });
+                        }
+                      }}
+                      onBlur={() => {
+                        const hrs = Math.min(23, Math.max(0, Number(goalHoursInput || 0)));
+                        let mins = Math.min(59, Math.max(0, Number(goalMinutesInput || 0)));
+                        if (hrs === 0 && mins === 0) mins = 1;
+                        setGoalHoursInput(String(hrs));
+                        setGoalMinutesInput(String(mins));
+                        onUpdateStopwatch({ ...stopwatch, plannedMinutes: hrs * 60 + mins });
+                      }}
+                      aria-label="목표 시간 (분)"
+                      className="w-full bg-transparent text-right text-xs font-semibold text-zinc-100 tabular-nums focus:outline-none"
+                    />
+                    <span className="text-xs text-zinc-400 whitespace-nowrap shrink-0">분</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <label className="flex items-start gap-2.5 pt-1.5 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={includeInTotal}
                 onChange={(e) =>
                   onUpdateStopwatch({
                     ...stopwatch,
-                    plannedMinutes: Number(e.target.value),
+                    includeInTotal: e.target.checked,
                   })
                 }
-                aria-label="목표 세션 길이"
-                className="min-h-[40px] rounded-xl border border-zinc-800 bg-zinc-900 px-3 text-xs text-zinc-200 tabular-nums"
-              >
-                <option value={25}>목표 25분</option>
-                <option value={45}>목표 45분</option>
-                <option value={50}>목표 50분</option>
-                <option value={60}>목표 60분</option>
-                <option value={90}>목표 90분</option>
-                <option value={120}>목표 120분</option>
-              </select>
-            </div>
+                className="mt-0.5 h-4 w-4 rounded border-zinc-700 bg-zinc-900 accent-violet-500 cursor-pointer shrink-0"
+              />
+              <span className="text-xs leading-snug text-zinc-200">
+                총 공부 시간에 포함
+                <span className="block text-[11px] text-zinc-400 mt-0.5">
+                  {includeInTotal
+                    ? "체크 시 선택한 날·주·월 총 공부 시간에 합산됩니다."
+                    : "체크 해제 시 과목별·측정 기록에만 남고 총 공부 시간에서는 제외됩니다."}
+                </span>
+              </span>
+            </label>
           </div>
 
           {/* Main Clock Display */}
@@ -503,7 +605,7 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
                 />
               </div>
               <p className="text-[11px] text-zinc-400 tabular-nums">
-                목표 {stopwatch.plannedMinutes}분 중 {progressPct}% 진행
+                목표 {formatDurationKo(stopwatch.plannedMinutes || 50)} 중 {progressPct}% 진행
               </p>
             </div>
           </div>
@@ -568,6 +670,7 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
           studySessions={studySessions}
           liveElapsedSeconds={elapsedSeconds}
           isStopwatchRunning={stopwatch.isRunning}
+          isLiveIncludedInTotal={includeInTotal}
           onDeleteSession={onDeleteSession}
         />
       </div>

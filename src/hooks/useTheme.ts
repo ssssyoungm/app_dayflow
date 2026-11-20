@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import type { ThemeMode } from "../types/dayflow";
+import { getKstHour } from "../lib/dateUtils";
 
 export function isDaytimeHour(date = new Date()): boolean {
-  const hour = date.getHours();
+  const hour = getKstHour(date);
   return hour >= 6 && hour < 18;
 }
 

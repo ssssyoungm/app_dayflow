@@ -44,6 +44,7 @@ export const DEFAULT_STOPWATCH: ActiveStopwatch = {
   subjectId: "",
   subjectName: "",
   plannedMinutes: 50,
+  includeInTotal: true,
   startedAtEpoch: null,
   accumulatedSeconds: 0,
 };

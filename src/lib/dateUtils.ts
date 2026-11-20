@@ -1,66 +1,147 @@
 import type { FreeSlot, ScheduleItem } from "../types/dayflow";
 
+export const KST_TIME_ZONE = "Asia/Seoul";
+const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+
 export const WEEKDAY_KO = ["일", "월", "화", "수", "목", "금", "토"];
 
-export function toLocalDateStr(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
+export interface KstDateParts {
+  year: number;
+  month: number; // 1..12
+  day: number; // 1..31
+  hour: number; // 0..23
+  minute: number; // 0..59
+  second: number; // 0..59
+}
+
+/** Extracts exact Korea Standard Time (Asia/Seoul, UTC+9) date & clock parts */
+export function getKstDateParts(date: Date = new Date()): KstDateParts {
+  // Korea does not observe DST; UTC+9 is always exact and avoids ICU/browser TZ quirks.
+  const shifted = new Date(date.getTime() + KST_OFFSET_MS);
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+    hour: shifted.getUTCHours(),
+    minute: shifted.getUTCMinutes(),
+    second: shifted.getUTCSeconds(),
+  };
+}
+
+function formatUtcDateStr(utcDate: Date): string {
+  const y = utcDate.getUTCFullYear();
+  const m = String(utcDate.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(utcDate.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 }
 
-export function parseLocalDate(dateStr: string): Date {
+function parseYmdParts(dateStr: string): { year: number; month: number; day: number } {
   const [y, m, d] = dateStr.split("-").map(Number);
-  return new Date(y, (m || 1) - 1, d || 1);
+  return {
+    year: Number.isFinite(y) && y > 0 ? y : 2026,
+    month: Number.isFinite(m) && m >= 1 && m <= 12 ? m : 1,
+    day: Number.isFinite(d) && d >= 1 && d <= 31 ? d : 1,
+  };
+}
+
+/** Formats any Date instant as YYYY-MM-DD in Korea Standard Time (Asia/Seoul) */
+export function toLocalDateStr(date: Date): string {
+  const { year, month, day } = getKstDateParts(date);
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+/** Parses YYYY-MM-DD into a local calendar Date (safe for month/day/weekday getters) */
+export function parseLocalDate(dateStr: string): Date {
+  const { year, month, day } = parseYmdParts(dateStr);
+  return new Date(year, month - 1, day);
+}
+
+/** Returns 0 (Sun) .. 6 (Sat) for YYYY-MM-DD using timezone-invariant UTC math */
+export function getWeekdayIndex(dateStr: string): number {
+  const { year, month, day } = parseYmdParts(dateStr);
+  return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
 }
 
 export function addDays(dateStr: string, delta: number): string {
-  const d = parseLocalDate(dateStr);
-  d.setDate(d.getDate() + delta);
-  return toLocalDateStr(d);
+  const { year, month, day } = parseYmdParts(dateStr);
+  const utc = new Date(Date.UTC(year, month - 1, day + delta));
+  return formatUtcDateStr(utc);
 }
 
-export function getTodayStr(): string {
-  return toLocalDateStr(new Date());
+export function shiftMonthDate(dateStr: string, deltaMonths: number): string {
+  const { year, month } = parseYmdParts(dateStr);
+  const utc = new Date(Date.UTC(year, month - 1 + deltaMonths, 1));
+  return formatUtcDateStr(utc);
+}
+
+/** Returns today's YYYY-MM-DD in Korea Standard Time (Asia/Seoul) */
+export function getTodayStr(now: Date = new Date()): string {
+  return toLocalDateStr(now);
+}
+
+/** Returns current hour (0..23) in Korea Standard Time */
+export function getKstHour(date: Date = new Date()): number {
+  return getKstDateParts(date).hour;
+}
+
+/** Returns current minutes since midnight (0..1439) in Korea Standard Time */
+export function getKstNowMinutes(date: Date = new Date()): number {
+  const { hour, minute } = getKstDateParts(date);
+  return hour * 60 + minute;
+}
+
+/** Formats an ISO timestamp or Date as HH:mm in Korea Standard Time */
+export function formatKstClock(isoOrDate: string | Date): string {
+  const d = typeof isoOrDate === "string" ? new Date(isoOrDate) : isoOrDate;
+  if (Number.isNaN(d.getTime())) return "";
+  const { hour, minute } = getKstDateParts(d);
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+/** Converts a KST YYYY-MM-DD and HH:mm pair into an exact UTC epoch timestamp (ms) */
+export function kstDateTimeToEpoch(dateStr: string, hhmm: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
+  const { year, month, day } = parseYmdParts(dateStr);
+  const totalMinutes = timeToMinutes(hhmm);
+  const hour = Math.floor(totalMinutes / 60);
+  const minute = totalMinutes % 60;
+  return Date.UTC(year, month - 1, day, hour, minute, 0, 0) - KST_OFFSET_MS;
 }
 
 /** Returns Monday..Sunday (7 YYYY-MM-DD strings) for the week containing dateStr */
 export function getWeekDates(dateStr: string): string[] {
-  const d = parseLocalDate(dateStr);
-  const day = d.getDay(); // 0=Sun..6=Sat
-  const diffToMon = day === 0 ? -6 : 1 - day;
-  const mon = new Date(d);
-  mon.setDate(d.getDate() + diffToMon);
+  const { year, month, day } = parseYmdParts(dateStr);
+  const baseUtc = new Date(Date.UTC(year, month - 1, day));
+  const dow = baseUtc.getUTCDay(); // 0=Sun..6=Sat
+  const diffToMon = dow === 0 ? -6 : 1 - dow;
   return Array.from({ length: 7 }, (_, i) => {
-    const cur = new Date(mon);
-    cur.setDate(mon.getDate() + i);
-    return toLocalDateStr(cur);
+    const cur = new Date(Date.UTC(year, month - 1, day + diffToMon + i));
+    return formatUtcDateStr(cur);
   });
 }
 
 /** Returns 42 cells (6 weeks, starting Sunday) for a month calendar grid */
-export function getMonthGridDates(year: number, monthIndex0: number): Array<{ dateStr: string; inMonth: boolean }> {
-  const firstDay = new Date(year, monthIndex0, 1);
-  const startOffset = firstDay.getDay(); // 0=Sun
-  const startDate = new Date(year, monthIndex0, 1 - startOffset);
+export function getMonthGridDates(
+  year: number,
+  monthIndex0: number
+): Array<{ dateStr: string; inMonth: boolean }> {
+  const firstDayUtc = new Date(Date.UTC(year, monthIndex0, 1));
+  const startOffset = firstDayUtc.getUTCDay(); // 0=Sun
 
   const cells: Array<{ dateStr: string; inMonth: boolean }> = [];
   for (let i = 0; i < 42; i++) {
-    const cur = new Date(startDate);
-    cur.setDate(startDate.getDate() + i);
+    const cur = new Date(Date.UTC(year, monthIndex0, 1 - startOffset + i));
     cells.push({
-      dateStr: toLocalDateStr(cur),
-      inMonth: cur.getMonth() === monthIndex0,
+      dateStr: formatUtcDateStr(cur),
+      inMonth: cur.getUTCMonth() === monthIndex0,
     });
   }
   return cells;
 }
 
 export function formatKoreanDateFull(dateStr: string): string {
-  const d = parseLocalDate(dateStr);
-  const month = d.getMonth() + 1;
-  const day = d.getDate();
-  const wk = WEEKDAY_KO[d.getDay()];
+  const { month, day } = parseYmdParts(dateStr);
+  const wk = WEEKDAY_KO[getWeekdayIndex(dateStr)];
   return `${month}월 ${day}일 (${wk})`;
 }
 
@@ -97,7 +178,7 @@ export function formatStopwatchClock(totalSeconds: number): string {
   return [hrs, mins, secs].map((n) => String(n).padStart(2, "0")).join(":");
 }
 
-/** Finds free intervals (>= minSlotMinutes) on a given date inside [windowStart, windowEnd] */
+/** Finds free intervals (>= minSlotMinutes) on a given date inside [windowStart, windowEnd] in KST */
 export function computeFreeSlotsForDate(
   dateStr: string,
   schedules: ScheduleItem[],
@@ -110,10 +191,9 @@ export function computeFreeSlotsForDate(
   const endMin = rawEndMin === 0 ? 24 * 60 : rawEndMin;
   if (endMin <= startMin) return [];
 
-  const now = new Date();
   const isToday = dateStr === getTodayStr();
   const effectiveStart = isToday
-    ? Math.max(startMin, Math.ceil((now.getHours() * 60 + now.getMinutes()) / 5) * 5)
+    ? Math.max(startMin, Math.ceil(getKstNowMinutes() / 5) * 5)
     : startMin;
 
   if (effectiveStart >= endMin) return [];
