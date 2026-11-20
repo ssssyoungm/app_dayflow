@@ -272,6 +272,16 @@ export default function App() {
     }));
   };
 
+  const handleUpdateSession = (updated: StudySession) => {
+    setState((prev) => ({
+      ...prev,
+      studySessions: prev.studySessions.map((s) =>
+        s.id === updated.id ? updated : s
+      ),
+    }));
+    showToast(`${updated.subjectName} 공부 기록이 수정되었습니다.`);
+  };
+
   const handleDeleteSession = (id: string) => {
     setState((prev) => ({
       ...prev,
@@ -468,6 +478,7 @@ export default function App() {
                 focusFullscreen={timerFullscreen}
                 onSetFocusFullscreen={setTimerFullscreen}
                 onSaveSession={handleSaveSession}
+                onUpdateSession={handleUpdateSession}
                 onDeleteSession={handleDeleteSession}
                 onShowToast={showToast}
               />

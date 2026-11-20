@@ -32,6 +32,7 @@ interface FocusTimerTabProps {
   focusFullscreen: boolean;
   onSetFocusFullscreen: (open: boolean) => void;
   onSaveSession: (session: StudySession, markScheduleId?: string) => void;
+  onUpdateSession: (session: StudySession) => void;
   onDeleteSession: (id: string) => void;
   onShowToast: (msg: string) => void;
 }
@@ -47,6 +48,7 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
   focusFullscreen,
   onSetFocusFullscreen,
   onSaveSession,
+  onUpdateSession,
   onDeleteSession,
   onShowToast,
 }) => {
@@ -671,6 +673,7 @@ export const FocusTimerTab: React.FC<FocusTimerTabProps> = ({
           liveElapsedSeconds={elapsedSeconds}
           isStopwatchRunning={stopwatch.isRunning}
           isLiveIncludedInTotal={includeInTotal}
+          onUpdateSession={onUpdateSession}
           onDeleteSession={onDeleteSession}
         />
       </div>

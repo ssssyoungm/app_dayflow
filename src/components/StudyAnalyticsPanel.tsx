@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Trash2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Pencil, Trash2, X } from "lucide-react";
 import type { StudyGoal, StudySession } from "../types/dayflow";
 import { colorToHex } from "../lib/colors";
 import {
@@ -18,6 +18,7 @@ import {
   parseLocalDate,
   shiftMonthDate,
 } from "../lib/dateUtils";
+import { StudySessionEditModal } from "./StudySessionEditModal";
 
 type PeriodMode = "daily" | "weekly" | "monthly";
 
@@ -27,6 +28,7 @@ interface StudyAnalyticsPanelProps {
   liveElapsedSeconds: number;
   isStopwatchRunning: boolean;
   isLiveIncludedInTotal: boolean;
+  onUpdateSession: (session: StudySession) => void;
   onDeleteSession: (id: string) => void;
 }
 
@@ -103,6 +105,7 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
   liveElapsedSeconds,
   isStopwatchRunning,
   isLiveIncludedInTotal,
+  onUpdateSession,
   onDeleteSession,
 }) => {
   const [todayStr, setTodayStr] = useState<string>(() => getTodayStr());
@@ -110,6 +113,7 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
   const [anchorDate, setAnchorDate] = useState<string>(() => getTodayStr());
   const [selectedSubjectKey, setSelectedSubjectKey] = useState<string | null>(null);
   const [selectedDayInWeek, setSelectedDayInWeek] = useState<string | null>(null);
+  const [editingSession, setEditingSession] = useState<StudySession | null>(null);
 
   useEffect(() => {
     const syncKstToday = () => {
@@ -1157,15 +1161,25 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-xs font-bold text-zinc-900 dark:text-zinc-100 tabular-nums whitespace-nowrap">
+                  <div className="flex items-center gap-1 shrink-0">
+                    <span className="text-xs font-bold text-zinc-900 dark:text-zinc-100 tabular-nums whitespace-nowrap mr-1">
                       {formatStudySecondsKo(secs)}
                     </span>
+                    <button
+                      type="button"
+                      onClick={() => setEditingSession(s)}
+                      className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg text-zinc-400 hover:text-violet-600 dark:hover:text-violet-400 transition-colors"
+                      aria-label="기록 수정"
+                      title="측정 시간 수정"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
                     <button
                       type="button"
                       onClick={() => onDeleteSession(s.id)}
                       className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg text-zinc-400 hover:text-rose-600 dark:hover:text-rose-400 transition-colors"
                       aria-label="기록 삭제"
+                      title="기록 삭제"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -1176,6 +1190,17 @@ export const StudyAnalyticsPanel: React.FC<StudyAnalyticsPanelProps> = ({
           </div>
         )}
       </section>
+
+      {editingSession && (
+        <StudySessionEditModal
+          session={editingSession}
+          onSave={(updated) => {
+            onUpdateSession(updated);
+            setEditingSession(null);
+          }}
+          onClose={() => setEditingSession(null)}
+        />
+      )}
     </div>
   );
 };
